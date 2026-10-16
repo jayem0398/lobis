@@ -523,7 +523,9 @@ export function useInvoices() {
   };
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
-  let invoicePollInterval = null;
+  const onDataUpdated = () => {
+    fetchInvoices(true);
+  };
 
   const initInvoices = async () => {
     isLoading.value = true;
@@ -538,22 +540,22 @@ export function useInvoices() {
     // Listen to live WebSocket events if Echo is active
     if (window.Echo) {
       try {
-        window.Echo.channel('invoices-channel')
+        window.Echo.private('invoices-channel')
           .listen('InvoiceCreated', () => fetchInvoices(true))
-          .listen('InvoiceStatusChanged', () => fetchInvoices(true))
           .listen('.InvoiceCreated', () => fetchInvoices(true))
-          .listen('.InvoiceStatusChanged', () => fetchInvoices(true));
+          .listen('InvoiceStatusChanged', () => fetchInvoices(true))
+          .listen('.InvoiceStatusChanged', () => fetchInvoices(true))
+          .listen('InvoiceDeleted', () => fetchInvoices(true))
+          .listen('.InvoiceDeleted', () => fetchInvoices(true));
       } catch (e) {}
     }
 
-    // Auto-polling every 10s ensures invoices and KPI cards always stay fresh in real-time
-    if (!invoicePollInterval) {
-      invoicePollInterval = setInterval(() => fetchInvoices(true), 10000);
-    }
+    // Pure event-driven update: refreshes automatically when new data is detected
+    window.addEventListener('lobis:data-updated', onDataUpdated);
   };
 
   onUnmounted(() => {
-    if (invoicePollInterval) clearInterval(invoicePollInterval);
+    window.removeEventListener('lobis:data-updated', onDataUpdated);
     if (window.Echo) {
       try {
         window.Echo.leave('invoices-channel');

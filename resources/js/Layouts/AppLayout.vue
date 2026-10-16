@@ -369,6 +369,7 @@ const handleIncomingNotification = (event) => {
   notifications.value.unshift({
     id: n.id,
     title: n.title || n.message,
+    message: n.message,
     time: 'just now',
     read: false,
     invoice_id: n.invoice_id,
@@ -381,6 +382,9 @@ const handleIncomingNotification = (event) => {
     n.message || 'You received a new update.',
     n.invoice_number
   );
+
+  // Trigger real-time content refresh across any open views
+  window.dispatchEvent(new CustomEvent('lobis:data-updated', { detail: n }));
 };
 
 const subscribeToChannels = () => {
@@ -404,6 +408,15 @@ const subscribeToChannels = () => {
         .listen('.NotificationCreated', handleIncomingNotification)
         .listen('NotificationCreated', handleIncomingNotification);
     }
+
+    // 4. Invoices Channel - Event-driven data update
+    window.Echo.private('invoices-channel')
+      .listen('.InvoiceCreated', (e) => window.dispatchEvent(new CustomEvent('lobis:data-updated', { detail: e })))
+      .listen('InvoiceCreated', (e) => window.dispatchEvent(new CustomEvent('lobis:data-updated', { detail: e })))
+      .listen('.InvoiceStatusChanged', (e) => window.dispatchEvent(new CustomEvent('lobis:data-updated', { detail: e })))
+      .listen('InvoiceStatusChanged', (e) => window.dispatchEvent(new CustomEvent('lobis:data-updated', { detail: e })))
+      .listen('.InvoiceDeleted', (e) => window.dispatchEvent(new CustomEvent('lobis:data-updated', { detail: e })))
+      .listen('InvoiceDeleted', (e) => window.dispatchEvent(new CustomEvent('lobis:data-updated', { detail: e })));
   } catch (err) {
     console.warn('Echo Reverb subscription failed:', err);
   }
@@ -449,28 +462,23 @@ const handleLogout = async () => {
   window.location.href = '/login';
 };
 
-let notifPollInterval = null;
-
 onMounted(async () => {
   window.addEventListener('resize', onResize);
   window.addEventListener('scroll', handleWindowScroll, { passive: true });
   await fetchAuthUser();
   await fetchNotifications();
   subscribeToChannels();
-
-  // Polling every 10 seconds ensures notifications and badges update reliably
-  notifPollInterval = setInterval(fetchNotifications, 10000);
 });
 
 onUnmounted(() => {
   window.removeEventListener('resize', onResize);
   window.removeEventListener('scroll', handleWindowScroll);
   if (toastTimer) clearTimeout(toastTimer);
-  if (notifPollInterval) clearInterval(notifPollInterval);
   if (window.Echo && user.value?.id) {
     window.Echo.leave(`App.Models.User.${user.value.id}`);
     window.Echo.leave(`user.${user.value.id}`);
     window.Echo.leave('admin-channel');
+    window.Echo.leave('invoices-channel');
   }
 });
 </script>

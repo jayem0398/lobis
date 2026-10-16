@@ -56,14 +56,14 @@ export function useDashboard() {
     }
   };
 
-  let dashboardPollInterval = null;
+  const onDataUpdated = () => {
+    fetchDashboardData(true);
+  };
 
   const initDashboard = async () => {
     await fetchDashboardData();
-    // Auto-polling every 12s keeps dashboard KPIs, revenue, and charts real-time
-    if (!dashboardPollInterval) {
-      dashboardPollInterval = setInterval(() => fetchDashboardData(true), 12000);
-    }
+    // Event-driven real-time update when new data is detected
+    window.addEventListener('lobis:data-updated', onDataUpdated);
   };
 
   onMounted(() => {
@@ -71,7 +71,7 @@ export function useDashboard() {
   });
 
   onUnmounted(() => {
-    if (dashboardPollInterval) clearInterval(dashboardPollInterval);
+    window.removeEventListener('lobis:data-updated', onDataUpdated);
   });
 
   return {

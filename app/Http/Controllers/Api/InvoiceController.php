@@ -323,25 +323,22 @@ class InvoiceController extends Controller
             DB::commit();
 
             try {
-                broadcast(new \App\Events\InvoiceCreated($invoice->load('items', 'client', 'team')))->toOthers();
+                broadcast(new \App\Events\InvoiceCreated($invoice->load('items', 'client', 'team')));
             } catch (\Exception $ex) {}
 
-            // Notify Admins & Superadmins
+            // Notify Admins & Superadmins (Single enhanced notification)
+            $isPending = ($invoice->status === 'Pending Approval');
+            $title = $isPending
+                ? "Approval Required: Invoice #{$invoice->invoice_number}"
+                : "New Invoice #{$invoice->invoice_number}";
+            $message = "Invoice #{$invoice->invoice_number} (₱" . number_format($invoice->total_amount, 2) . ") created by " . ($currentUser->name ?? 'User') . ($isPending ? " and is awaiting admin approval." : ".");
+
             $this->notifyAdmins(
-                'new_invoice',
-                "New Invoice #{$invoice->invoice_number}",
-                "Invoice #{$invoice->invoice_number} (₱" . number_format($invoice->total_amount, 2) . ") created by " . ($currentUser->name ?? 'User') . ".",
+                $isPending ? 'pending_approval' : 'new_invoice',
+                $title,
+                $message,
                 $invoice
             );
-
-            if ($invoice->status === 'Pending Approval') {
-                $this->notifyAdmins(
-                    'pending_approval',
-                    "Approval Required: Invoice #{$invoice->invoice_number}",
-                    "Invoice #{$invoice->invoice_number} is pending approval.",
-                    $invoice
-                );
-            }
 
             \App\Models\ActivityLog::log(
                 'Create Invoice',
@@ -726,6 +723,10 @@ class InvoiceController extends Controller
             $invoice->items()->delete();
             $invoice->delete();
             DB::commit();
+
+            try {
+                broadcast(new \App\Events\InvoiceDeleted($id, $invoiceNumber));
+            } catch (\Exception $ex) {}
 
             // Notify invoice owner if deleted by someone else
             if ($ownerId && $ownerId != $currentUser->id) {
