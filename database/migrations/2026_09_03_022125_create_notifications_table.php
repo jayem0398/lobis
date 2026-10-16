@@ -19,7 +19,7 @@ return new class extends Migration
             $table->boolean('is_read')->default(false);
             $table->timestamps();
 
-            $table->foreign('user_id')->references('id')->on('users')->onDelete('cascade');
+            $table->index('user_id');
         });
     }
 

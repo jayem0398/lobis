@@ -19,7 +19,7 @@ class NotificationController extends Controller
             if (!Schema::hasTable('notifications')) {
                 Schema::create('notifications', function ($table) {
                     $table->id();
-                    $table->unsignedBigInteger('user_id');
+                    $table->unsignedBigInteger('user_id')->index();
                     $table->string('type')->default('general');
                     $table->string('title');
                     $table->text('message');
@@ -28,6 +28,13 @@ class NotificationController extends Controller
                     $table->boolean('is_read')->default(false);
                     $table->timestamps();
                 });
+            } else {
+                // Drop foreign key if it exists to allow cross-database central_auth user_ids
+                try {
+                    \Illuminate\Support\Facades\DB::statement("ALTER TABLE notifications DROP FOREIGN KEY notifications_user_id_foreign");
+                } catch (\Throwable $e) {
+                    // Ignored: foreign key already dropped or constraint name differs
+                }
             }
         } catch (\Throwable $e) {
             Log::warning('ensureTableExists warning: ' . $e->getMessage());
