@@ -29,6 +29,52 @@ class InvoiceController extends Controller
         return $this->getRole($user) === 'superadmin';
     }
 
+    // ─── HELPER: get all system admins (case-insensitive across roles) ───────
+    private function getAdmins($excludeUserId = null)
+    {
+        $query = User::where(function ($q) {
+            $q->whereIn('role', ['admin', 'superadmin', 'Admin', 'Superadmin', 'super_admin', 'Super Admin'])
+              ->orWhereRaw("LOWER(role) LIKE '%admin%'");
+        });
+
+        if ($excludeUserId) {
+            $query->where('id', '!=', $excludeUserId);
+        }
+
+        return $query->get();
+    }
+
+    // ─── HELPER: create notification and broadcast real-time event ───────────
+    private function notifyUser($userId, $type, $title, $message, $invoice = null)
+    {
+        if (!$userId) return;
+        try {
+            $notif = \App\Models\AppNotification::create([
+                'user_id'        => $userId,
+                'type'           => $type,
+                'title'          => $title,
+                'message'        => $message,
+                'invoice_id'     => $invoice?->id,
+                'invoice_number' => $invoice?->invoice_number,
+                'is_read'        => false,
+            ]);
+
+            try {
+                broadcast(new \App\Events\NotificationCreated($notif));
+            } catch (\Throwable $e) {}
+        } catch (\Throwable $e) {
+            Log::error("Failed to create notification for user {$userId}: " . $e->getMessage());
+        }
+    }
+
+    private function notifyAdmins($type, $title, $message, $invoice = null, $excludeUserId = null)
+    {
+        $admins = $this->getAdmins($excludeUserId);
+        foreach ($admins as $admin) {
+            $this->notifyUser($admin->id, $type, $title, $message, $invoice);
+        }
+    }
+
     // ─── HELPER: find MAX numeric invoice number across ALL records ───────────
     private function findMaxInvoiceNumber(): int
     {
@@ -281,28 +327,20 @@ class InvoiceController extends Controller
             } catch (\Exception $ex) {}
 
             // Notify Admins & Superadmins
-            try {
-                $admins = User::whereIn('role', ['admin', 'superadmin', 'Admin', 'Superadmin'])
-                    ->where('id', '!=', $currentUser->id)
-                    ->get();
+            $this->notifyAdmins(
+                'new_invoice',
+                "New Invoice #{$invoice->invoice_number}",
+                "Invoice #{$invoice->invoice_number} (₱" . number_format($invoice->total_amount, 2) . ") created by " . ($currentUser->name ?? 'User') . ".",
+                $invoice
+            );
 
-                foreach ($admins as $admin) {
-                    $notif = \App\Models\AppNotification::create([
-                        'user_id'        => $admin->id,
-                        'type'           => 'new_invoice',
-                        'title'          => "New Invoice #{$invoice->invoice_number}",
-                        'message'        => "Invoice #{$invoice->invoice_number} (₱" . number_format($invoice->total_amount, 2) . ") created by " . ($currentUser->name ?? 'User') . ".",
-                        'invoice_id'     => $invoice->id,
-                        'invoice_number' => $invoice->invoice_number,
-                        'is_read'        => false,
-                    ]);
-
-                    try {
-                        broadcast(new \App\Events\NotificationCreated($notif));
-                    } catch (\Throwable $e) {}
-                }
-            } catch (\Throwable $e) {
-                Log::error('Error creating notification for invoice creation: ' . $e->getMessage());
+            if ($invoice->status === 'Pending Approval') {
+                $this->notifyAdmins(
+                    'pending_approval',
+                    "Approval Required: Invoice #{$invoice->invoice_number}",
+                    "Invoice #{$invoice->invoice_number} is pending approval.",
+                    $invoice
+                );
             }
 
             \App\Models\ActivityLog::log(
@@ -383,6 +421,26 @@ class InvoiceController extends Controller
             try {
                 broadcast(new \App\Events\InvoiceStatusChanged($invoice->load('items', 'client', 'team')))->toOthers();
             } catch (\Exception $ex) {}
+
+            // Notify invoice owner if status changed
+            if ($invoice->user_id && $invoice->user_id != $currentUser->id) {
+                $this->notifyUser(
+                    $invoice->user_id,
+                    'invoice_status',
+                    "Invoice #{$invoice->invoice_number}: {$request->status}",
+                    "Your invoice #{$invoice->invoice_number} was marked as {$request->status} by " . ($currentUser->name ?? 'Admin') . ".",
+                    $invoice
+                );
+            }
+
+            // Notify other admins about status change
+            $this->notifyAdmins(
+                'invoice_status',
+                "Invoice #{$invoice->invoice_number}: {$request->status}",
+                "Invoice #{$invoice->invoice_number} was marked as {$request->status} by " . ($currentUser->name ?? 'Admin') . ".",
+                $invoice,
+                $currentUser->id
+            );
 
             $invoice->user = User::find($invoice->user_id);
             $invoice->approver = User::find($invoice->approved_by);
@@ -553,29 +611,30 @@ class InvoiceController extends Controller
 
             DB::commit();
 
-            // Notify invoice owner if status changed or updated by someone else
-            try {
-                if ($invoice->user_id && $invoice->user_id != $currentUser->id) {
-                    $statusMsg = ($currentStatus !== $newStatus)
-                        ? "Status changed from {$currentStatus} to {$newStatus}"
-                        : "Invoice details were updated";
+            // Notify invoice owner if updated by someone else
+            if ($invoice->user_id && $invoice->user_id != $currentUser->id) {
+                $statusMsg = ($currentStatus !== $newStatus)
+                    ? "Status changed from {$currentStatus} to {$newStatus}"
+                    : "Invoice details were updated";
 
-                    $notif = \App\Models\AppNotification::create([
-                        'user_id'        => $invoice->user_id,
-                        'type'           => 'invoice_update',
-                        'title'          => "Invoice #{$invoice->invoice_number} Updated",
-                        'message'        => "Your invoice #{$invoice->invoice_number}: {$statusMsg} by " . ($currentUser->name ?? 'Admin') . ".",
-                        'invoice_id'     => $invoice->id,
-                        'invoice_number' => $invoice->invoice_number,
-                        'is_read'        => false,
-                    ]);
+                $this->notifyUser(
+                    $invoice->user_id,
+                    'invoice_update',
+                    "Invoice #{$invoice->invoice_number} Updated",
+                    "Your invoice #{$invoice->invoice_number}: {$statusMsg} by " . ($currentUser->name ?? 'Admin') . ".",
+                    $invoice
+                );
+            }
 
-                    try {
-                        broadcast(new \App\Events\NotificationCreated($notif));
-                    } catch (\Throwable $e) {}
-                }
-            } catch (\Throwable $e) {
-                Log::error('Error creating notification for invoice update: ' . $e->getMessage());
+            // If status is Pending Approval or status changed, notify Admins
+            if ($newStatus === 'Pending Approval' || ($currentStatus !== $newStatus && $newStatus !== 'Draft')) {
+                $this->notifyAdmins(
+                    'invoice_status',
+                    "Invoice #{$invoice->invoice_number}: {$newStatus}",
+                    "Invoice #{$invoice->invoice_number} is {$newStatus} (updated by " . ($currentUser->name ?? 'User') . ").",
+                    $invoice,
+                    $currentUser->id
+                );
             }
 
             $invoice->user = User::find($invoice->user_id);
@@ -625,27 +684,12 @@ class InvoiceController extends Controller
             ]);
 
             // Notify Admins
-            try {
-                $admins = User::whereIn('role', ['admin', 'superadmin', 'Admin', 'Superadmin'])
-                    ->where('id', '!=', $request->user()?->id ?? 0)
-                    ->get();
-
-                foreach ($admins as $admin) {
-                    $notif = \App\Models\AppNotification::create([
-                        'user_id'        => $admin->id,
-                        'type'           => 'deletion_request',
-                        'title'          => "Deletion Request: #{$invoice->invoice_number}",
-                        'message'        => "Deletion requested for invoice #{$invoice->invoice_number}. Reason: {$request->reason}",
-                        'invoice_id'     => $invoice->id,
-                        'invoice_number' => $invoice->invoice_number,
-                        'is_read'        => false,
-                    ]);
-
-                    try {
-                        broadcast(new \App\Events\NotificationCreated($notif));
-                    } catch (\Throwable $e) {}
-                }
-            } catch (\Throwable $e) {}
+            $this->notifyAdmins(
+                'deletion_request',
+                "Deletion Request: #{$invoice->invoice_number}",
+                "Deletion requested for invoice #{$invoice->invoice_number}. Reason: {$request->reason}",
+                $invoice
+            );
 
             return response()->json([
                 'status'  => 'success',
@@ -676,9 +720,22 @@ class InvoiceController extends Controller
         try {
             DB::beginTransaction();
             $invoice = Invoice::findOrFail($id);
+            $invoiceNumber = $invoice->invoice_number;
+            $ownerId = $invoice->user_id;
+
             $invoice->items()->delete();
             $invoice->delete();
             DB::commit();
+
+            // Notify invoice owner if deleted by someone else
+            if ($ownerId && $ownerId != $currentUser->id) {
+                $this->notifyUser(
+                    $ownerId,
+                    'invoice_deleted',
+                    "Invoice Deleted",
+                    "Invoice #{$invoiceNumber} was deleted by " . ($currentUser->name ?? 'Admin') . "."
+                );
+            }
 
             return response()->json([
                 'status'  => 'success',

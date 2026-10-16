@@ -117,7 +117,6 @@
               <div class="dd-head">
                 <span>Notifications</span>
                 <div class="dd-head-actions">
-                  <button @click.stop="triggerTestNotification" class="dd-action test-action" title="Send a test notification via Reverb">Test Reverb</button>
                   <button @click.stop="markAllAsRead" class="dd-action">Mark all read</button>
                 </div>
               </div>
@@ -315,15 +314,27 @@ const formatRelativeTime = (iso) => {
 const fetchNotifications = async () => {
   try {
     const { data } = await axios.get('/api/notifications');
-    notifications.value = (data.notifications || []).map(n => ({
+    const newItems = (data.notifications || []).map(n => ({
       id: n.id,
       title: n.title || n.message,
+      message: n.message,
       time: formatRelativeTime(n.created_at),
       read: !!n.is_read,
       invoice_id: n.invoice_id,
       invoice_number: n.invoice_number,
     }));
-    unreadCount.value = data.unread_count || 0;
+
+    // If new unread notification arrived while user is active on the page, trigger popup!
+    const newUnreadCount = data.unread_count || 0;
+    if (notifications.value.length > 0 && newUnreadCount > unreadCount.value) {
+      const latest = newItems[0];
+      if (latest && !latest.read) {
+        showToast(latest.title, latest.message || 'You received a new update.', latest.invoice_number);
+      }
+    }
+
+    notifications.value = newItems;
+    unreadCount.value = newUnreadCount;
   } catch (e) {}
 };
 
@@ -344,19 +355,6 @@ const handleNotificationClick = async (n) => {
     window.location.href = `/invoices?search=${encodeURIComponent(n.invoice_number)}`;
   } else if (n.invoice_id) {
     window.location.href = `/invoices`;
-  }
-};
-
-const triggerTestNotification = async () => {
-  try {
-    const res = await axios.post('/api/notifications/test');
-    if (res.data?.notification) {
-      showToast('Notification Dispatched', 'Real-time test event sent via Reverb!', null);
-    }
-  } catch (e) {
-    const errMessage = e.response?.data?.message || e.message || 'Server error';
-    showToast('Test Notification Error', errMessage, null);
-    console.error('Failed to trigger test notification:', e);
   }
 };
 
@@ -451,18 +449,24 @@ const handleLogout = async () => {
   window.location.href = '/login';
 };
 
+let notifPollInterval = null;
+
 onMounted(async () => {
   window.addEventListener('resize', onResize);
   window.addEventListener('scroll', handleWindowScroll, { passive: true });
   await fetchAuthUser();
   await fetchNotifications();
   subscribeToChannels();
+
+  // Polling every 10 seconds ensures notifications and badges update reliably
+  notifPollInterval = setInterval(fetchNotifications, 10000);
 });
 
 onUnmounted(() => {
   window.removeEventListener('resize', onResize);
   window.removeEventListener('scroll', handleWindowScroll);
   if (toastTimer) clearTimeout(toastTimer);
+  if (notifPollInterval) clearInterval(notifPollInterval);
   if (window.Echo && user.value?.id) {
     window.Echo.leave(`App.Models.User.${user.value.id}`);
     window.Echo.leave(`user.${user.value.id}`);
@@ -842,14 +846,6 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-.dd-action.test-action {
-  color: #3b82f6;
-  font-size: 10px;
-  border: 1px dashed rgba(59, 130, 246, 0.4);
-}
-.dd-action.test-action:hover {
-  background: rgba(59, 130, 246, 0.08);
 }
 .notif-item {
   cursor: pointer;

@@ -1,4 +1,4 @@
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, onUnmounted } from 'vue';
 import axios from 'axios';
 
 export function useDashboard() {
@@ -36,8 +36,8 @@ export function useDashboard() {
     window.location.href = `/invoices?aging=${agingCategory}`;
   };
 
-  const fetchDashboardData = async () => {
-    isLoading.value = true;
+  const fetchDashboardData = async (silent = false) => {
+    if (!silent) isLoading.value = true;
     try {
       const userRes = await axios.get('/api/user');
       currentUser.value = userRes.data.user || userRes.data;
@@ -50,18 +50,28 @@ export function useDashboard() {
       recentInvoices.value = data.recent_activities || data.recent_invoices || [];
       chartData.value = data.charts?.monthly_revenue || data.chart || [];
     } catch (e) {
-      console.error('Failed to load dashboard metrics:', e);
+      if (!silent) console.error('Failed to load dashboard metrics:', e);
     } finally {
-      isLoading.value = false;
+      if (!silent) isLoading.value = false;
     }
   };
 
+  let dashboardPollInterval = null;
+
   const initDashboard = async () => {
     await fetchDashboardData();
+    // Auto-polling every 12s keeps dashboard KPIs, revenue, and charts real-time
+    if (!dashboardPollInterval) {
+      dashboardPollInterval = setInterval(() => fetchDashboardData(true), 12000);
+    }
   };
 
   onMounted(() => {
     initDashboard();
+  });
+
+  onUnmounted(() => {
+    if (dashboardPollInterval) clearInterval(dashboardPollInterval);
   });
 
   return {

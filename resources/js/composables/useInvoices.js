@@ -1,4 +1,4 @@
-import { ref, computed, watch, onMounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import axios from 'axios';
 import { useToast } from 'vue-toastification';
 
@@ -319,8 +319,8 @@ export function useInvoices() {
     }
   };
 
-  const fetchInvoices = async () => {
-    isLoading.value = true;
+  const fetchInvoices = async (silent = false) => {
+    if (!silent) isLoading.value = true;
     try {
       const params = {};
       if (selectedTeamFilter.value && selectedTeamFilter.value !== '') {
@@ -329,10 +329,12 @@ export function useInvoices() {
       const res = await axios.get('/api/invoices', { params });
       invoices.value = res.data.data || res.data;
     } catch (error) {
-      console.error('Error fetching invoices:', error);
-      toast.error('Failed to load invoices from database.');
+      if (!silent) {
+        console.error('Error fetching invoices:', error);
+        toast.error('Failed to load invoices from database.');
+      }
     } finally {
-      isLoading.value = false;
+      if (!silent) isLoading.value = false;
     }
   };
 
@@ -521,6 +523,8 @@ export function useInvoices() {
   };
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
+  let invoicePollInterval = null;
+
   const initInvoices = async () => {
     isLoading.value = true;
     await fetchUserData();
@@ -530,7 +534,32 @@ export function useInvoices() {
       await fetchTeams();
     }
     isLoading.value = false;
+
+    // Listen to live WebSocket events if Echo is active
+    if (window.Echo) {
+      try {
+        window.Echo.channel('invoices-channel')
+          .listen('InvoiceCreated', () => fetchInvoices(true))
+          .listen('InvoiceStatusChanged', () => fetchInvoices(true))
+          .listen('.InvoiceCreated', () => fetchInvoices(true))
+          .listen('.InvoiceStatusChanged', () => fetchInvoices(true));
+      } catch (e) {}
+    }
+
+    // Auto-polling every 10s ensures invoices and KPI cards always stay fresh in real-time
+    if (!invoicePollInterval) {
+      invoicePollInterval = setInterval(() => fetchInvoices(true), 10000);
+    }
   };
+
+  onUnmounted(() => {
+    if (invoicePollInterval) clearInterval(invoicePollInterval);
+    if (window.Echo) {
+      try {
+        window.Echo.leave('invoices-channel');
+      } catch (e) {}
+    }
+  });
 
   return {
     // State
