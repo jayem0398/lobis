@@ -20,7 +20,9 @@ class AuthController extends Controller
             $request->session()->regenerate();
             $user = Auth::user();
 
-            \App\Models\ActivityLog::log('User Login', "User {$user->name} ({$user->role}) logged in.", $user);
+            if (class_exists(\App\Models\ActivityLog::class)) {
+                \App\Models\ActivityLog::log('User Login', "User {$user->name} ({$user->role}) logged in.", $user);
+            }
 
             return response()->json([
                 'status' => 'success',
@@ -37,11 +39,6 @@ class AuthController extends Controller
 
     public function logout(Request $request)
     {
-        // Kung gumagamit ng Sanctum Tokens:
-        // if ($request->user()) {
-        //     $request->user()->currentAccessToken()->delete();
-        // }
-
         // Kung session-based (SPA):
         Auth::guard('web')->logout();
 

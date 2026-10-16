@@ -12,21 +12,24 @@ use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\ReportController;
 use App\Http\Controllers\Api\SettingController;
 
-// Public Authentication Route
-Route::post('/login', [AuthController::class, 'login']);
+Route::middleware('web')->group(function () {
+    Route::post('/login', [AuthController::class, 'login']);
+    Route::post('/logout', [AuthController::class, 'logout']);
+});
 
 // Authenticated API Routes Group (Sanctum)
 Route::middleware('auth:sanctum')->group(function () {
     // Auth User
-    Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/user', [AuthController::class, 'user']);
 
     // Dashboard Analytics & Global Search
     Route::get('/dashboard/analytics', [DashboardController::class, 'index']);
+    Route::get('/dashboard/metrics', [DashboardController::class, 'index']);
     Route::get('/search', [DashboardController::class, 'search']);
 
     // Notifications
     Route::get('/notifications', [NotificationController::class, 'index']);
+    Route::post('/notifications/test', [NotificationController::class, 'testNotification']);
     Route::post('/notifications/{id}/read', [NotificationController::class, 'markRead']);
     Route::post('/notifications/read-all', [NotificationController::class, 'markAllRead']);
 
@@ -65,6 +68,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Users & Roles Management Routes
     Route::get('/users', [UserController::class, 'index']);
     Route::post('/users', [UserController::class, 'store']);
+    Route::post('/users/check-email', [UserController::class, 'checkEmail']);
     Route::put('/users/{id}', [UserController::class, 'update']);
     Route::delete('/users/{id}', [UserController::class, 'destroy']);
 });

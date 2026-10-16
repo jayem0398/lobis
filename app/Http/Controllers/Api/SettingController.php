@@ -25,8 +25,19 @@ class SettingController extends Controller
         'require_deletion_approval' => '1',
     ];
 
-    public function index()
+    private function isAdmin($user): bool
     {
+        if (!$user) return false;
+        $role = strtolower(trim($user->role ?? 'user'));
+        return $role === 'admin' || $role === 'superadmin';
+    }
+
+    public function index(Request $request)
+    {
+        if (!$this->isAdmin($request->user())) {
+            return response()->json(['message' => 'Unauthorized. Admin access required.'], 403);
+        }
+
         $allSettings = Setting::all()->pluck('value', 'key')->toArray();
         $settings = array_merge($this->defaults, $allSettings);
 
@@ -38,6 +49,9 @@ class SettingController extends Controller
 
     public function update(Request $request)
     {
+        if (!$this->isAdmin($request->user())) {
+            return response()->json(['message' => 'Unauthorized. Admin access required.'], 403);
+        }
         $validated = $request->validate([
             'company_name'              => 'required|string',
             'company_address'           => 'nullable|string',

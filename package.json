@@ -17,7 +17,9 @@
     },
     "dependencies": {
         "@inertiajs/vue3": "^3.6.1",
+        "laravel-echo": "2.6.1",
         "pinia": "^4.0.2",
+        "pusher-js": "8.6.0",
         "vue": "^3.5.41",
         "vue-router": "^4.6.4",
         "vue-toastification": "^2.0.0-rc.5"

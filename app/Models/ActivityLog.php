@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class ActivityLog extends Model
 {
+    protected $connection = 'mysql';
+
     protected $fillable = [
         'user_id',
         'user_name',
@@ -23,12 +25,20 @@ class ActivityLog extends Model
     public static function log(string $action, string $description, ?User $user = null): self
     {
         $userObj = $user ?? auth()->user();
-        return self::create([
+        $log = self::create([
             'user_id'    => $userObj ? $userObj->id : null,
             'user_name'  => $userObj ? $userObj->name : 'System',
             'action'     => $action,
             'description'=> $description,
             'ip_address' => request()->ip(),
         ]);
+
+        try {
+            broadcast(new \App\Events\NewActivityLog($log))->toOthers();
+        } catch (\Exception $e) {
+            // ignore broadcast errors if reverb is offline
+        }
+
+        return $log;
     }
 }

@@ -5,6 +5,10 @@
       <!-- HERO HEADER BAR -->
       <div class="welcome-hero-banner mb-24">
         <div class="hero-text-content">
+          <div class="hero-title-badge">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+            <span>FINANCIAL REPORTS</span>
+          </div>
           <h1>Financial Reports &amp; Executive Analytics</h1>
           <p>Comprehensive corporate revenue breakdown, BIR tax compliance statements, and collection performance tracker.</p>
         </div>
@@ -13,19 +17,15 @@
             <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
             Export CSV
           </button>
-          <button @click="exportPdf" class="btn-sm-action sky">
+          <button @click="exportPdf" class="btn-sm-action amber">
             <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
             Export PDF
-          </button>
-          <button @click="printReport" class="btn-sm-action dark">
-            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
-            Print
           </button>
         </div>
       </div>
 
-      <!-- FILTER CONTROLS BAR -->
-      <div class="analytics-card-panel p-20 mb-24">
+      <!-- FILTER CONTROLS BAR (Admin Only) -->
+      <div v-if="isAdminOrSuper" class="analytics-card-panel p-20 mb-24">
         <div class="filters-grid-row">
           <div class="filter-item-box">
             <label>Start Date</label>
@@ -48,8 +48,21 @@
         </div>
       </div>
 
+      <!-- TEAM SCOPE BANNER (Non-Admin Users) -->
+      <div v-if="!isAdminOrSuper" class="team-scope-banner">
+        <div class="team-banner-content">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+          <span>Reporting Scope: <strong>{{ userTeamName ? userTeamName : 'Assigned Team Data Only' }}</strong></span>
+        </div>
+        <span class="team-scope-chip">Filtered by Team</span>
+      </div>
+
       <!-- KPI METRICS GRID (5 CARDS) -->
       <div class="kpi-grid-container mb-24">
+        <template v-if="isLoading">
+          <SkeletonCard v-for="n in 5" :key="n" />
+        </template>
+        <template v-else>
         <!-- Total Billed -->
         <div class="kpi-card-item">
           <div class="kpi-info">
@@ -98,10 +111,10 @@
         <div class="kpi-card-item">
           <div class="kpi-info">
             <span class="kpi-label">Total Output VAT (12%)</span>
-            <span class="kpi-number text-sky-700">₱{{ formatCurrency(summary.total_vat) }}</span>
+            <span class="kpi-number">₱{{ formatCurrency(summary.total_vat) }}</span>
             <small class="text-xs text-slate-500 mt-1">Vatable Sales: ₱{{ formatCurrency(taxSummary.vatable_sales) }}</small>
           </div>
-          <div class="kpi-icon-box bg-sky-50 text-sky-700">
+          <div class="kpi-icon-box bg-slate-100 text-slate-700">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line></svg>
           </div>
         </div>
@@ -109,13 +122,14 @@
         <div class="kpi-card-item">
           <div class="kpi-info">
             <span class="kpi-label">Withholding Tax (2% EWT)</span>
-            <span class="kpi-number text-purple-700">₱{{ formatCurrency(summary.total_wht) }}</span>
+            <span class="kpi-number">₱{{ formatCurrency(summary.total_wht) }}</span>
             <small class="text-xs text-slate-500 mt-1">Total Tax Creditable</small>
           </div>
-          <div class="kpi-icon-box bg-purple-50 text-purple-700">
+          <div class="kpi-icon-box bg-slate-100 text-slate-700">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
           </div>
         </div>
+        </template>
       </div>
 
       <!-- MAIN REPORT TABS & TABLES -->
@@ -123,7 +137,7 @@
         <div class="panel-header-box flex-between-box">
           <div class="report-tabs-navigation">
             <button 
-              v-for="tab in ['Monthly Performance', 'BIR Tax &amp; Compliance', 'Client Ranking', 'Team Quota Tracker']" 
+              v-for="tab in availableReportTabs" 
               :key="tab"
               @click="activeReportTab = tab"
               :class="['report-tab-btn', { active: activeReportTab === tab }]"
@@ -142,13 +156,15 @@
           <!-- TAB 1: MONTHLY PERFORMANCE -->
           <div v-if="activeReportTab === 'Monthly Performance'">
             <div class="section-sub-header mb-16 flex-between-box">
-              <h4 class="font-bold text-slate-800 text-sm uppercase">Monthly Revenue &amp; Collection Breakdown ({{ new Date().getFullYear() }})</h4>
+              <h4 class="font-bold text-slate-800 text-sm uppercase">Monthly Revenue &amp; Collection Breakdown</h4>
               <div v-if="yoy.last_year_billed > 0" class="yoy-legend">
                 <span class="yoy-badge yoy-up">▲ Above Last Year</span>
                 <span class="yoy-badge yoy-down">▼ Below Last Year</span>
               </div>
             </div>
             <div class="items-table-frame">
+              <SkeletonTable v-if="isLoading" :rows="6" :cols="6" />
+              <template v-else>
               <table class="enterprise-data-table">
                 <thead>
                   <tr>
@@ -166,7 +182,7 @@
                     <td class="text-right font-semibold">₱{{ formatCurrency(m.billed) }}</td>
                     <td class="text-right font-bold text-emerald-600">₱{{ formatCurrency(m.paid) }}</td>
                     <td class="text-right text-slate-600">₱{{ formatCurrency(m.vat) }}</td>
-                    <td class="text-right text-purple-700">₱{{ formatCurrency(m.withholding_tax) }}</td>
+                    <td class="text-right text-slate-600">₱{{ formatCurrency(m.withholding_tax) }}</td>
                     <td>
                       <div class="flex items-center gap-2">
                         <div class="progress-bar-track flex-1" style="height: 8px;">
@@ -186,6 +202,7 @@
                   </tr>
                 </tfoot>
               </table>
+              </template>
             </div>
           </div>
 
@@ -204,7 +221,7 @@
                   </div>
                   <div class="flex justify-between text-sm">
                     <span class="text-slate-600">Output VAT (12% Rate):</span>
-                    <span class="font-bold text-sky-700">₱{{ formatCurrency(taxSummary.output_vat) }}</span>
+                    <span class="font-bold text-slate-900">₱{{ formatCurrency(taxSummary.output_vat) }}</span>
                   </div>
                   <div class="flex justify-between text-sm">
                     <span class="text-slate-600">Non-VAT / Zero-Rated Sales:</span>
@@ -222,7 +239,7 @@
                 <div class="space-y-3">
                   <div class="flex justify-between text-sm">
                     <span class="text-slate-600">Total Tax Creditable Withheld (2%):</span>
-                    <span class="font-bold text-purple-700">₱{{ formatCurrency(taxSummary.withholding_tax) }}</span>
+                    <span class="font-bold text-slate-900">₱{{ formatCurrency(taxSummary.withholding_tax) }}</span>
                   </div>
                   <div class="flex justify-between text-sm">
                     <span class="text-slate-600">Total Invoices with EWT:</span>
@@ -239,6 +256,8 @@
               <h4 class="font-bold text-slate-800 text-sm uppercase">Top Revenue Generating Clients</h4>
             </div>
             <div class="items-table-frame">
+              <SkeletonTable v-if="isLoading" :rows="6" :cols="6" />
+              <template v-else>
               <table class="enterprise-data-table">
                 <thead>
                   <tr>
@@ -260,13 +279,14 @@
                     <td class="text-right font-bold text-slate-900">₱{{ formatCurrency(c.total_billed) }}</td>
                     <td class="text-right font-bold text-emerald-600">₱{{ formatCurrency(c.total_paid) }}</td>
                     <td class="text-right font-bold text-amber-600">₱{{ formatCurrency(c.total_unpaid) }}</td>
-                    <td class="text-right font-bold text-sky-700">{{ c.revenue_share }}%</td>
+                    <td class="text-right font-bold text-slate-700">{{ c.revenue_share }}%</td>
                   </tr>
-                  <tr v-if="clientBreakdown.length === 0">
+                  <tr v-if="clientBreakdown.length === 0 && !isLoading">
                     <td colspan="6" class="empty-data-message">No client revenue records available for this period.</td>
                   </tr>
                 </tbody>
               </table>
+              </template>
             </div>
           </div>
 
@@ -276,6 +296,8 @@
               <h4 class="font-bold text-slate-800 text-sm uppercase">Team Performance &amp; Quota Target Report</h4>
             </div>
             <div class="items-table-frame">
+              <SkeletonTable v-if="isLoading" :rows="6" :cols="6" />
+              <template v-else>
               <table class="enterprise-data-table">
                 <thead>
                   <tr>
@@ -301,11 +323,12 @@
                       </div>
                     </td>
                   </tr>
-                  <tr v-if="teamBreakdown.length === 0">
+                  <tr v-if="teamBreakdown.length === 0 && !isLoading">
                     <td colspan="5" class="empty-data-message">No team quota metrics available.</td>
                   </tr>
                 </tbody>
               </table>
+              </template>
             </div>
           </div>
 
@@ -317,282 +340,23 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue';
-import axios from 'axios';
-import { useToast } from 'vue-toastification';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import { useReports } from '@/composables/useReports';
+import SkeletonCard from '@/Components/Skeleton/SkeletonCard.vue';
+import SkeletonTable from '@/Components/Skeleton/SkeletonTable.vue';
+import './Index.css';
 
-const toast = useToast();
-const activeReportTab = ref('Monthly Performance');
-const teams = ref([]);
+const {
+  // State
+  activeReportTab, teams, isAdminOrSuper, userTeamName,
+  filters, summary, yoy, monthlyTrend, taxSummary,
+  clientBreakdown, teamBreakdown, isLoading,
 
-const filters = ref({
-  start_date: '',
-  end_date: '',
-  team_id: '',
-});
+  // Computeds
+  availableReportTabs, currentFormattedDate,
 
-const summary = ref({
-  total_billed: 0,
-  total_subtotal: 0,
-  total_paid: 0,
-  total_pending: 0,
-  total_draft: 0,
-  total_overdue: 0,
-  total_vat: 0,
-  total_wht: 0,
-  total_discount: 0,
-  collection_rate: 0,
-  invoice_count: 0,
-});
-
-const yoy = ref({
-  last_year_billed: 0,
-  last_year_paid: 0,
-  growth_billed_pct: null,
-  growth_paid_pct: null,
-});
-
-const monthlyTrend = ref([]);
-const taxSummary = ref({ vatable_sales: 0, output_vat: 0, non_vat_sales: 0, exempt_sales: 0, withholding_tax: 0 });
-const clientBreakdown = ref([]);
-const teamBreakdown = ref([]);
-
-const currentFormattedDate = computed(() => {
-  return new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-});
-
-const formatCurrency = (val) => Number(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-const fetchReportData = async () => {
-  try {
-    const res = await axios.get('/api/reports/financial', { params: filters.value });
-    const data = res.data;
-    summary.value = data.summary || summary.value;
-    monthlyTrend.value = data.monthly_trend || [];
-    taxSummary.value = data.tax_summary || taxSummary.value;
-    clientBreakdown.value = data.client_breakdown || [];
-    teamBreakdown.value = data.team_breakdown || [];
-    if (data.yoy) {
-      yoy.value = data.yoy;
-    }
-  } catch (error) {
-    console.error('Failed to load financial report data:', error);
-    toast.error('Failed to load report analytics.');
-  }
-};
-
-const fetchTeams = async () => {
-  try {
-    const res = await axios.get('/api/teams');
-    teams.value = res.data.data || res.data || [];
-  } catch (e) {
-    console.error('Failed to load teams:', e);
-  }
-};
-
-const resetFilters = () => {
-  filters.value = { start_date: '', end_date: '', team_id: '' };
-  fetchReportData();
-};
-
-const printReport = () => {
-  window.print();
-};
-
-const exportPdf = () => {
-  const params = new URLSearchParams(filters.value).toString();
-  window.open(`/api/reports/financial/pdf?${params}`, '_blank');
-};
-
-const exportToCsv = () => {
-  let csvContent = "data:text/csv;charset=utf-8,";
-  csvContent += "Financial Reports Summary\n";
-  csvContent += `Generated Date,${currentFormattedDate.value}\n\n`;
-  csvContent += "Metric,Amount (PHP)\n";
-  csvContent += `Total Billed,${summary.value.total_billed}\n`;
-  csvContent += `Total Collected (Paid),${summary.value.total_paid}\n`;
-  csvContent += `Pending Balance,${summary.value.total_pending}\n`;
-  csvContent += `Overdue Amount,${summary.value.total_overdue}\n`;
-  csvContent += `Output VAT (12%),${summary.value.total_vat}\n`;
-  csvContent += `Withholding Tax (2%),${summary.value.total_wht}\n\n`;
-
-  csvContent += "Month,Billed,Collected,Output VAT,Withholding Tax,Collection Rate (%)\n";
-  monthlyTrend.value.forEach(row => {
-    csvContent += `${row.month},${row.billed},${row.paid},${row.vat},${row.withholding_tax},${row.collection_rate}%\n`;
-  });
-
-  const encodedUri = encodeURI(csvContent);
-  const link = document.createElement("a");
-  link.setAttribute("href", encodedUri);
-  link.setAttribute("download", `Financial_Report_${new Date().toISOString().slice(0,10)}.csv`);
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-};
-
-onMounted(async () => {
-  await fetchTeams();
-  await fetchReportData();
-});
+  // Helpers & Actions
+  formatCurrency, fetchUserData, fetchTeams, fetchReportData,
+  resetFilters, printReport, exportPdf, exportToCsv
+} = useReports();
 </script>
-
-<style scoped>
-.dashboard-page-wrapper { max-width: 1400px; margin: 0 auto; padding-left: 1in; padding-right: 1in; padding-top: 24px; padding-bottom: 24px; box-sizing: border-box; }
-.mb-24 { margin-bottom: 24px; }
-.mb-16 { margin-bottom: 16px; }
-.p-20 { padding: 20px; }
-.p-24 { padding: 24px; }
-
-.welcome-hero-banner { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px 24px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); }
-.hero-text-content h1 { font-size: 18px; font-weight: 800; color: #0f172a; margin: 0 0 4px 0; letter-spacing: -0.5px; }
-.hero-text-content p { font-size: 12px; color: #64748b; margin: 0; }
-.hero-actions-group { display: flex; gap: 8px; align-items: center; }
-
-/* Compact action buttons */
-.btn-sm-action {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 6px 12px;
-  border-radius: 6px;
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  border: 1px solid transparent;
-  transition: all 0.2s ease;
-  white-space: nowrap;
-  letter-spacing: 0.2px;
-}
-.btn-sm-action.outline { background: #ffffff; border-color: #cbd5e1; color: #334155; }
-.btn-sm-action.outline:hover { background: #f8fafc; border-color: #94a3b8; }
-.btn-sm-action.sky { background: #f0f9ff; border-color: #bae6fd; color: #0369a1; }
-.btn-sm-action.sky:hover { background: #e0f2fe; }
-.btn-sm-action.dark { background: #0f172a; border-color: #0f172a; color: #ffffff; }
-.btn-sm-action.dark:hover { background: #1e293b; }
-
-.analytics-card-panel { background: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); }
-.panel-header-box { background: #0f172a; padding: 14px 20px; display: flex; justify-content: space-between; align-items: center; }
-
-/* Generated date pill — right side of tab header */
-.generated-date-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 10px;
-  font-weight: 600;
-  color: #64748b;
-  background: rgba(255,255,255,0.07);
-  padding: 4px 10px;
-  border-radius: 20px;
-  border: 1px solid rgba(255,255,255,0.1);
-  white-space: nowrap;
-}
-
-/* YoY badges */
-.yoy-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  font-size: 10px;
-  font-weight: 700;
-  padding: 2px 7px;
-  border-radius: 10px;
-  white-space: nowrap;
-}
-.yoy-up { background: #dcfce7; color: #166534; }
-.yoy-down { background: #fee2e2; color: #991b1b; }
-.yoy-legend { display: flex; gap: 8px; }
-
-.kpi-footer { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
-
-.filters-grid-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; align-items: flex-end; }
-.filter-item-box { display: flex; flex-direction: column; }
-.filter-item-box label { font-size: 11px; font-weight: 700; text-transform: uppercase; color: #64748b; margin-bottom: 6px; }
-
-.form-control-input, .form-select-dropdown { width: 100%; height: 40px; padding: 0 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 13px; outline: none; background: #ffffff; color: #1e293b; }
-.btn-secondary-action { height: 40px; padding: 0 16px; border: 1px solid #cbd5e1; background: #f8fafc; border-radius: 8px; font-size: 12px; font-weight: 700; color: #475569; cursor: pointer; }
-.btn-secondary-action:hover { background: #f1f5f9; }
-
-.kpi-grid-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
-.kpi-card-item { background: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0; padding: 20px; display: flex; justify-content: space-between; align-items: flex-start; box-shadow: 0 2px 4px rgba(0,0,0,0.03); }
-.kpi-info { display: flex; flex-direction: column; }
-.kpi-label { font-size: 11px; font-weight: 700; text-transform: uppercase; color: #64748b; margin-bottom: 4px; letter-spacing: 0.5px; }
-.kpi-number { font-size: 20px; font-weight: 800; color: #0f172a; }
-.kpi-icon-box { width: 42px; height: 42px; border-radius: 10px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-.kpi-chip-badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 10px; }
-
-.report-tabs-navigation { display: flex; gap: 6px; }
-.report-tab-btn { background: transparent; border: none; color: #64748b; font-size: 11px; font-weight: 700; padding: 7px 14px; border-radius: 6px; cursor: pointer; text-transform: uppercase; letter-spacing: 0.3px; transition: all 0.2s ease; }
-.report-tab-btn.active { background: rgba(255,255,255,0.15); color: #ffffff; }
-.report-tab-btn:not(.active):hover { background: rgba(255,255,255,0.08); color: #e2e8f0; }
-
-.enterprise-data-table { width: 100%; border-collapse: collapse; }
-.enterprise-data-table th { background: #f8fafc; padding: 14px 18px; font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; border-bottom: 1px solid #e2e8f0; }
-.enterprise-data-table td { padding: 16px 18px; border-bottom: 1px solid #e2e8f0; font-size: 13px; color: #334155; }
-.progress-bar-track { background: #e2e8f0; border-radius: 10px; overflow: hidden; }
-.progress-bar-fill { height: 100%; border-radius: 10px; transition: width 0.3s ease; }
-.empty-data-message { padding: 40px; text-align: center; color: #94a3b8; font-style: italic; }
-
-/* Utility classes */
-.flex-between-box { display: flex; justify-content: space-between; align-items: center; }
-.section-sub-header { display: flex; justify-content: space-between; align-items: center; }
-.text-xs { font-size: 11px; }
-.font-bold { font-weight: 700; }
-.text-slate-800 { color: #1e293b; }
-.text-slate-700 { color: #334155; }
-.text-slate-600 { color: #475569; }
-.text-slate-500 { color: #64748b; }
-.text-slate-400 { color: #94a3b8; }
-.text-slate-900 { color: #0f172a; }
-.text-emerald-600 { color: #059669; }
-.text-amber-600 { color: #d97706; }
-.text-amber-700 { color: #b45309; }
-.text-sky-700 { color: #0369a1; }
-.text-purple-700 { color: #7e22ce; }
-.text-right { text-align: right; }
-.text-center { text-align: center; }
-.font-semibold { font-weight: 600; }
-.items-table-frame { border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden; }
-.flex { display: flex; }
-.items-center { align-items: center; }
-.gap-2 { gap: 8px; }
-.flex-1 { flex: 1; }
-.inline-block { display: inline-block; }
-.space-y-3 > * + * { margin-top: 12px; }
-.grid { display: grid; }
-.grid-cols-1 { grid-template-columns: 1fr; }
-.gap-6 { gap: 24px; }
-.border { border-width: 1px; border-style: solid; }
-.border-slate-200 { border-color: #e2e8f0; }
-.rounded-xl { border-radius: 12px; }
-.bg-slate-50 { background-color: #f8fafc; }
-.border-b { border-bottom-width: 1px; border-bottom-style: solid; }
-.pb-8 { padding-bottom: 8px; }
-.justify-between { justify-content: space-between; }
-.text-sm { font-size: 13px; }
-.mt-1 { margin-top: 4px; }
-.bg-emerald-100 { background: #d1fae5; }
-.text-emerald-700 { color: #047857; }
-.bg-slate-100 { background: #f1f5f9; }
-.bg-emerald-50 { background: #f0fdf4; }
-.bg-amber-50 { background: #fffbeb; }
-.bg-sky-50 { background: #f0f9ff; }
-.bg-purple-50 { background: #faf5ff; }
-.bg-emerald-500 { background: #10b981; }
-.bg-sky-500 { background: #0ea5e9; }
-.border-l-4 { border-left-width: 4px; border-left-style: solid; }
-.border-l-emerald-500 { border-left-color: #10b981; }
-.border-l-amber-500 { border-left-color: #f59e0b; }
-
-@media (min-width: 768px) {
-  .md\:grid-cols-2 { grid-template-columns: repeat(2, 1fr); }
-}
-
-@media print {
-  body * { visibility: hidden; }
-  #printable-report-area, #printable-report-area * { visibility: visible; }
-  #printable-report-area { position: absolute; left: 0; top: 0; width: 100%; box-shadow: none; border: none; }
-  .panel-header-box { background: #0f172a !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-}
-</style>

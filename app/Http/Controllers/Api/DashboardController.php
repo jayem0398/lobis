@@ -18,7 +18,7 @@ class DashboardController extends Controller
         
         // Pilitin nating basahin ang role mapa-small o capital man ang nasa DB
         $role = $currentUser ? strtolower(trim($currentUser->role)) : '';
-        $isAdmin = ($role === 'admin');
+        $isAdmin = ($role === 'admin' || $role === 'superadmin');
 
         // Kung Admin, walang filter (lahat ng data ng kumpanya ang makikita).
         // Kung hindi, saka lang natin salain base sa user_id o team_id.
@@ -34,7 +34,7 @@ class DashboardController extends Controller
 
         // Metrics
         $totalUsers = $isAdmin ? User::count() : 1;
-        $totalTeams = $isAdmin ? Team::count() : ($currentUser->team_id ? 1 : 0);
+        $totalTeams = $isAdmin ? Team::count() : (!empty($currentUser?->team_id) ? 1 : 0);
         
         if ($isAdmin) {
             $totalClients = Client::count();
@@ -60,7 +60,7 @@ class DashboardController extends Controller
             ->count();
 
         $currentYear = date('Y');
-        $monthlyRevenue = (clone $invoicesQuery)
+        $rawMonthly = (clone $invoicesQuery)
             ->select(
                 DB::raw('MONTH(issue_date) as month_number'),
                 DB::raw('MONTHNAME(issue_date) as month_name'),
@@ -70,7 +70,24 @@ class DashboardController extends Controller
             ->whereYear('issue_date', $currentYear)
             ->groupBy(DB::raw('MONTH(issue_date)'), DB::raw('MONTHNAME(issue_date)'))
             ->orderBy('month_number', 'asc')
-            ->get();
+            ->get()
+            ->keyBy('month_number');
+
+        $monthlyRevenue = [];
+        $monthNames = [
+            1 => 'Jan', 2 => 'Feb', 3 => 'Mar', 4 => 'Apr',
+            5 => 'May', 6 => 'Jun', 7 => 'Jul', 8 => 'Aug',
+            9 => 'Sep', 10 => 'Oct', 11 => 'Nov', 12 => 'Dec'
+        ];
+        foreach ($monthNames as $mNum => $mName) {
+            $item = $rawMonthly->get($mNum);
+            $monthlyRevenue[] = [
+                'month_number' => $mNum,
+                'month_name' => $mName,
+                'paid_amount' => $item ? (float)$item->paid_amount : 0,
+                'unpaid_amount' => $item ? (float)$item->unpaid_amount : 0,
+            ];
+        }
 
         $recentInvoices = (clone $invoicesQuery)
             ->with('client')
@@ -102,7 +119,7 @@ class DashboardController extends Controller
                 'unpaid_invoices' => $unpaidInvoicesCount,
             ],
             'charts' => [
-                'monthly_revenue' => $monthlyRevenue->isEmpty() ? [] : $monthlyRevenue,
+                'monthly_revenue' => $monthlyRevenue,
             ],
             'recent_activities' => $recentInvoices
         ], 200);
@@ -117,7 +134,7 @@ class DashboardController extends Controller
 
         $currentUser = $request->user();
         $role = $currentUser ? strtolower(trim($currentUser->role)) : '';
-        $isAdmin = ($role === 'admin');
+        $isAdmin = ($role === 'admin' || $role === 'superadmin');
 
         $invoicesQuery = Invoice::where('invoice_number', 'LIKE', "%{$query}%");
         if (!$isAdmin && $currentUser) {

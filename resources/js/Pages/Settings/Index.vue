@@ -10,8 +10,15 @@
         </div>
       </div>
 
+      <div v-if="!isAdmin" class="analytics-card-panel p-24 text-center">
+        <svg class="mx-auto mb-12 text-amber-500" viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+        <h3 class="text-lg font-bold text-slate-800 mb-4">Access Restricted &mdash; Admin Only</h3>
+        <p class="text-sm text-slate-600 mb-16">System &amp; Enterprise Settings are restricted to Administrator accounts. Regular team members cannot modify corporate configurations.</p>
+        <a href="/dashboard" class="btn-primary-action inline-block">Return to Dashboard</a>
+      </div>
+
       <!-- 2-COLUMN SETTINGS LAYOUT -->
-      <div class="settings-grid-layout">
+      <div v-else class="settings-grid-layout">
         
         <!-- LEFT SIDEBAR TAB NAVIGATION -->
         <div class="settings-sidebar-nav">
@@ -237,6 +244,18 @@ const toast = useToast();
 const activeTab = ref('Company Profile & Signatory');
 const isSaving = ref(false);
 const lastSavedTime = ref('');
+const isAdmin = ref(true);
+
+const fetchUserData = async () => {
+  try {
+    const res = await axios.get('/api/user');
+    const user = res.data.user || res.data;
+    const role = user?.role?.toLowerCase().trim() ?? '';
+    isAdmin.value = role === 'admin' || role === 'superadmin';
+  } catch (e) {
+    console.error('Failed to load user info:', e);
+  }
+};
 
 const form = ref({
   company_name: 'LENDELL OUTSOURCING SOLUTIONS, INC.',
@@ -295,12 +314,15 @@ const saveSettings = async () => {
 };
 
 onMounted(async () => {
-  await fetchSettings();
+  await fetchUserData();
+  if (isAdmin.value) {
+    await fetchSettings();
+  }
 });
 </script>
 
 <style scoped>
-.dashboard-page-wrapper { max-width: 1400px; margin: 0 auto; padding-left: 1in; padding-right: 1in; padding-top: 24px; padding-bottom: 24px; box-sizing: border-box; }
+.dashboard-page-wrapper { max-width: 1400px; margin: 0 auto; padding: 24px 32px; box-sizing: border-box; }
 .mb-24 { margin-bottom: 24px; }
 .mb-20 { margin-bottom: 20px; }
 .mt-20 { margin-top: 20px; }

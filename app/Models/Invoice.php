@@ -7,7 +7,12 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class Invoice extends Model
-{
+{   
+    /**
+     * Explicitly bind to the primary database connection.
+     */
+    protected $connection = 'mysql';
+
     protected $fillable = [
         'invoice_number', 
         'client_id', 
@@ -21,12 +26,10 @@ class Invoice extends Model
         'tax_type',
         'has_withholding_tax',
         'withholding_tax_amount',
-        // ─── DELIVERY FIELDS ───
         'delivery_address',
         'delivery_contact_person',
         'delivery_position',
         'delivery_phone',
-        // ───────────────────────
         'subtotal', 
         'tax_amount', 
         'discount_amount', 
@@ -37,6 +40,24 @@ class Invoice extends Model
         'edit_count',
         'deletion_requested',
         'deletion_reason'
+    ];
+
+    /**
+     * Cast attributes to native types.
+     */
+    protected $casts = [
+        'issue_date'             => 'date:Y-m-d',
+        'due_date'               => 'date:Y-m-d',
+        'service_period_start'   => 'date:Y-m-d',
+        'service_period_end'     => 'date:Y-m-d',
+        'has_withholding_tax'    => 'boolean',
+        'deletion_requested'     => 'boolean',
+        'withholding_tax_amount' => 'decimal:2',
+        'subtotal'               => 'decimal:2',
+        'tax_amount'             => 'decimal:2',
+        'discount_amount'        => 'decimal:2',
+        'total_amount'           => 'decimal:2',
+        'edit_count'             => 'integer',
     ];
 
     public function items(): HasMany

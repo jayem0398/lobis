@@ -3,8 +3,10 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Config;
 use TCPDF;
 
 class PdfController extends Controller
@@ -45,7 +47,6 @@ class PdfController extends Controller
             }
         }
 
-        // DO NOT return any default/fallback image if non-matching
         return null;
     }
 
@@ -54,9 +55,13 @@ class PdfController extends Controller
         @ini_set('display_errors', '0');
         error_reporting(E_ALL & ~E_WARNING & ~E_NOTICE);
 
+        // Cross-DB join: invoices are in lobisv2_db, users are in lodisv2_db
+        // Use fully qualified table name so MySQL can resolve across databases
+        $authDb = Config::get('database.connections.central_auth.database', 'lodisv2_db');
+
         $billing = DB::table('invoices as i')
-            ->leftJoin('users as u_creator', 'i.user_id', '=', 'u_creator.id')
-            ->leftJoin('users as u_approver', 'i.approved_by', '=', 'u_approver.id')
+            ->leftJoin(DB::raw("`{$authDb}`.`users` as u_creator"), 'i.user_id', '=', 'u_creator.id')
+            ->leftJoin(DB::raw("`{$authDb}`.`users` as u_approver"), 'i.approved_by', '=', 'u_approver.id')
             ->leftJoin('clients as c', 'i.client_id', '=', 'c.id')
             ->select(
                 'i.*',
@@ -74,6 +79,20 @@ class PdfController extends Controller
 
         if (!$billing) {
             abort(404, "Invoice with ID {$id} not found.");
+        }
+
+        // Fallback: if JOIN returned null names, fetch them via Eloquent (central_auth connection)
+        if (empty($billing->creator_full_name) && !empty($billing->user_id)) {
+            $creator = User::find($billing->user_id);
+            if ($creator) {
+                $billing->creator_full_name = $creator->name;
+            }
+        }
+        if (empty($billing->approver_full_name) && !empty($billing->approved_by)) {
+            $approver = User::find($billing->approved_by);
+            if ($approver) {
+                $billing->approver_full_name = $approver->name;
+            }
         }
 
         $items = DB::table('invoice_items')
@@ -99,7 +118,7 @@ class PdfController extends Controller
         $pdf->SetAutoPageBreak(TRUE, 15);
 
         // ========================================================================
-        // PAGE 1: DELIVERY RECEIPT (Picture 1 exact replica)
+        // PAGE 1: DELIVERY RECEIPT 
         // ========================================================================
         $pdf->AddPage();
 
@@ -111,7 +130,6 @@ class PdfController extends Controller
         $colonX = 42;
         $valX   = 48;
 
-        // DR# Row
         $pdf->SetXY($labelX, 42);
         $pdf->SetFont('helvetica', 'B', 10);
         $pdf->Cell(20, 6, 'DR#', 0, 0, 'L');
@@ -120,7 +138,6 @@ class PdfController extends Controller
         $pdf->SetXY($valX, 42);
         $pdf->Cell(100, 6, $billing->invoice_number, 0, 1, 'L');
 
-        // Date Row
         $pdf->SetXY($labelX, 48);
         $pdf->SetFont('helvetica', 'B', 10);
         $pdf->Cell(20, 6, 'Date', 0, 0, 'L');
@@ -129,7 +146,6 @@ class PdfController extends Controller
         $pdf->SetXY($valX, 48);
         $pdf->Cell(100, 6, $dueDateFormatted, 0, 1, 'L');
 
-        // TO Row
         $pdf->SetXY($labelX, 54);
         $pdf->SetFont('helvetica', 'B', 10);
         $pdf->Cell(20, 6, 'TO', 0, 0, 'L');
@@ -146,7 +162,6 @@ class PdfController extends Controller
 
         $attY = max(70, $pdf->GetY() + 4);
 
-        // Attention Row
         $contactPerson = $billing->delivery_contact_person ?? $billing->BcontactPerson ?? '';
         $contactPos    = $billing->delivery_position ?? $billing->Bposition ?? '';
 
@@ -169,16 +184,11 @@ class PdfController extends Controller
 
         $boxStartY = max(88, $pdf->GetY() + 8);
 
-        // Gray header boxes
         $pdf->SetFillColor(190, 190, 190);
         $pdf->SetXY($labelX, $boxStartY);
         $pdf->SetFont('helvetica', 'B', 10);
         $pdf->Cell(170, 7, 'DELIVERY RECEIPT', 1, 1, 'C', true);
-
-        $pdf->SetX($labelX);
-        $pdf->Cell(170, 7, 'DESCRIPTION', 1, 1, 'C', true);
-
-        // Description Body Box
+        
         $descBoxY = $pdf->GetY();
         $pdf->SetX($labelX);
         $pdf->Cell(170, 35, '', 1, 1, 'C', false);
@@ -189,7 +199,6 @@ class PdfController extends Controller
 
         $pdf->SetY($descBoxY + 42);
 
-        // Received By Section
         $pdf->SetX($labelX);
         $pdf->SetFont('helvetica', 'B', 10);
         $pdf->Cell(170, 6, 'Received By:', 0, 1);
@@ -206,11 +215,10 @@ class PdfController extends Controller
 
 
         // ========================================================================
-        // PAGE 2: BILLING INVOICE (Picture 2 exact replica)
+        // PAGE 2: BILLING INVOICE 
         // ========================================================================
         $pdf->AddPage();
 
-        // 10mm Left Margin, 190mm Width
         $p2LeftX = 10;
         $p2Width = 190;
 
@@ -229,12 +237,10 @@ class PdfController extends Controller
 
         $metaY = $pdf->GetY();
 
-        // ── Row 1: BILLING INVOICE (left) ──── No.: LEN-XXXX (right) ──
         $pdf->SetXY($p2LeftX, $metaY);
         $pdf->SetFont('helvetica', 'B', 13);
         $pdf->Cell(130, 7, 'BILLING INVOICE', 0, 0, 'L');
 
-        // "No." label + colon + value — all on the same Y as BILLING INVOICE
         $metaLabelX = 140;
         $metaColonX = 152;
         $metaValX   = 156;
@@ -248,7 +254,6 @@ class PdfController extends Controller
         $pdf->SetFont('helvetica', 'B', 13);
         $pdf->Cell(44, 7, $billing->invoice_number, 0, 1, 'L');
 
-        // ── Row 2: (empty left) ──────────── DATE: August 26, 2026 (right) ──
         $pdf->SetXY($metaLabelX, $metaY + 7);
         $pdf->SetFont('helvetica', '', 9);
         $pdf->Cell(12, 6, 'DATE', 0, 0, 'R');
@@ -260,8 +265,10 @@ class PdfController extends Controller
 
         $pdf->SetY($metaY + 16);
 
-        // SOLD TO Box Grid — 2mm left/right inner padding
+        // Standard line weight for SOLD TO block
+        $pdf->SetLineWidth(0.2);
         $pdf->setCellPaddings(2, 1, 2, 1);
+        
         $pdf->SetX($p2LeftX);
         $pdf->SetFont('helvetica', 'B', 9);
         $pdf->Cell($p2Width, 6, 'SOLD TO:', 1, 1, 'L');
@@ -278,22 +285,37 @@ class PdfController extends Controller
         $pdf->SetFont('helvetica', 'B', 9);
         $pdf->Cell(158, 6, $billing->tinNumber ?? '', 1, 1, 'L');
 
+        // ========================================================================
+        // ➔ FIX PARA SA MAHABANG BUSINESS ADDRESS (MULTICELL)
+        // ========================================================================
         $pdf->SetX($p2LeftX);
+        
+        $addressText = $billing->BclientAddress ?? '';
+        $addrLines = $pdf->getNumLines($addressText, 158);
+        $addrHeight = max(7, $addrLines * 5); // 7mm default, mag-aadjust pababa
+        
         $pdf->SetFont('helvetica', '', 9);
-        $pdf->Cell(32, 7, 'Business Address:', 1, 0, 'L');
+        $pdf->MultiCell(32, $addrHeight, 'Business Address:', 1, 'L', false, 0, '', '', true, 0, false, true, $addrHeight, 'M');
+        
         $pdf->SetFont('helvetica', 'B', 9);
-        $pdf->Cell(158, 7, $billing->BclientAddress ?? '', 1, 1, 'L');
+        $pdf->MultiCell(158, $addrHeight, $addressText, 1, 'L', false, 1, '', '', true, 0, false, true, $addrHeight, 'M');
 
         $pdf->Ln(3);
 
-        // Item Table Grid (Width 190mm)
         $col_no = 10;
         $col_desc = 95;
         $col_qty = 20;
         $col_price = 30;
         $col_amount = 35;
 
+        // ========================================================================
+        // GRID DRAWING (MAY MULTICELL FIX PARA HINDI MAG-OVERLAP)
+        // ========================================================================
+        $pdf->SetLineWidth(0.1); 
         $pdf->setCellPaddings(2, 1, 2, 1);
+
+        // Header
+        $hdrY = $pdf->GetY();
         $pdf->SetX($p2LeftX);
         $pdf->SetFillColor(224, 224, 224);
         $pdf->SetFont('helvetica', 'B', 9);
@@ -303,15 +325,24 @@ class PdfController extends Controller
         $pdf->Cell($col_price, 7, 'UNIT PRICE', 1, 0, 'C', true);
         $pdf->Cell($col_amount, 7, 'AMOUNT', 1, 1, 'C', true);
 
+        // Items 
+        $itemsY = $pdf->GetY();
         $itemCount = 1;
         $pdf->SetFont('helvetica', '', 9);
+        
         foreach ($items as $item) {
             $pdf->SetX($p2LeftX);
-            $pdf->Cell($col_no, 6, $itemCount++, 1, 0, 'C');
-            $pdf->Cell($col_desc, 6, $item->item_name, 1, 0, 'L');
-            $pdf->Cell($col_qty, 6, $item->quantity, 1, 0, 'C');
-            $pdf->Cell($col_price, 6, number_format($item->price, 2), 1, 0, 'R');
-            $pdf->Cell($col_amount, 6, number_format($item->total, 2), 1, 1, 'R');
+            
+            // Binibilang kung gaano kahaba ang string para ibagay ang taas (height)
+            $descLines = $pdf->getNumLines($item->item_name, $col_desc);
+            $rowH = max(6, $descLines * 5); // 6mm default, o base sa bilang ng linya x 5mm
+
+            // Gumagamit ng MultiCell para lahat ng column pwedeng mag-expand pa-ilalim
+            $pdf->MultiCell($col_no, $rowH, $itemCount++, 1, 'C', false, 0, '', '', true, 0, false, true, $rowH, 'M');
+            $pdf->MultiCell($col_desc, $rowH, $item->item_name, 1, 'L', false, 0, '', '', true, 0, false, true, $rowH, 'M');
+            $pdf->MultiCell($col_qty, $rowH, $item->quantity, 1, 'C', false, 0, '', '', true, 0, false, true, $rowH, 'M');
+            $pdf->MultiCell($col_price, $rowH, number_format($item->price, 2), 1, 'R', false, 0, '', '', true, 0, false, true, $rowH, 'M');
+            $pdf->MultiCell($col_amount, $rowH, number_format($item->total, 2), 1, 'R', false, 1, '', '', true, 0, false, true, $rowH, 'M');
         }
 
         $minRows = 7;
@@ -325,93 +356,113 @@ class PdfController extends Controller
             $pdf->Cell($col_price, 6, '', 1, 0, 'C');
             $pdf->Cell($col_amount, 6, '', 1, 1, 'C');
         }
-
-        $isVat = strtolower($billing->tax_type ?? 'vat') === 'vat' || $billing->tax_amount > 0;
-        $totalAmount = (float)$billing->total_amount;
-        $taxAmount = (float)$billing->tax_amount;
-        $whtAmount = (float)($billing->withholding_tax_amount ?? 0);
+        $summaryY = $pdf->GetY();
+        
+        // ========================================================================
+        // UPDATED: TAX COMPUTATIONS (INCLUSIVE, EXCLUSIVE, EXEMPT)
+        // ========================================================================
+        $taxType = strtolower($billing->tax_type ?? 'vat_exclusive');
         $subtotal = (float)$billing->subtotal;
+        $whtAmount = (float)($billing->withholding_tax ?? $billing->withholding_tax_amount ?? 0);
+        $discountAmount = (float)($billing->discount_amount ?? 0);
 
-        if ($isVat && $taxAmount > 0) {
-            $netOfVat = $totalAmount / 1.12;
-            $vatVal = $totalAmount - $netOfVat;
-        } else {
+        if ($taxType === 'vat_inclusive') {
+            $totalSalesVatInc = $subtotal;
+            $vatableSales = $subtotal / 1.12;
+            $vatAmount = $totalSalesVatInc - $vatableSales;
+            $netOfVat = $vatableSales;
+            $vatExempt = 0;
+            $totalAmountDue = $totalSalesVatInc - $whtAmount - $discountAmount;
+        } elseif ($taxType === 'vat_exclusive' || $taxType === 'vat' || $billing->tax_amount > 0) {
+            $vatableSales = $subtotal;
+            $vatAmount = $subtotal * 0.12;
+            $totalSalesVatInc = $vatableSales + $vatAmount;
+            $netOfVat = $vatableSales;
+            $vatExempt = 0;
+            $totalAmountDue = $totalSalesVatInc - $whtAmount - $discountAmount;
+        } else { // vat_exempt or non-vat
+            $vatableSales = 0;
+            $vatAmount = 0;
+            $totalSalesVatInc = $subtotal;
             $netOfVat = $subtotal;
-            $vatVal = 0;
+            $vatExempt = $subtotal;
+            $totalAmountDue = $totalSalesVatInc - $whtAmount - $discountAmount;
         }
 
-        // Summary Calculations Grid — all 6 rows use SAME 4-column layout: 55 | 50 | 50 | 35 = 190mm
-        $pdf->setCellPaddings(2, 1, 2, 1);
-        // Row 0: Total Sales (VAT Inclusives)
+        // Row 1
+        $r1Y = $pdf->GetY();
         $pdf->SetX($p2LeftX);
-        $pdf->SetFont('helvetica', '', 8);
-        $pdf->Cell(55, 5, '', 1, 0, 'L');             // col1 blank
-        $pdf->Cell(50, 5, '', 1, 0, 'R');             // col2 blank
-        $pdf->SetFont('helvetica', 'B', 8);
-        $pdf->Cell(50, 5, 'Total Sales (VAT Inclusives)', 1, 0, 'R');
-        $pdf->Cell(35, 5, number_format($totalAmount, 2), 1, 1, 'R');
+        $pdf->Cell(105, 6, '', 0, 0, 'C'); 
+        $pdf->SetFont('helvetica', 'B', 9);
+        $pdf->Cell(50, 6, 'Total Sales (VAT Inclusive)', 1, 0, 'R');
+        $pdf->Cell(35, 6, number_format($totalSalesVatInc, 2), 1, 1, 'R');
 
-        // Row 1: Vatable Sales / Less: VAT
+        // Row 2
+        $r2Y = $pdf->GetY();
         $pdf->SetX($p2LeftX);
-        $pdf->SetFont('helvetica', '', 8);
-        $pdf->Cell(55, 5, 'Vatable Sales', 1, 0, 'L');
-        $pdf->SetFont('helvetica', 'B', 8);
-        $pdf->Cell(50, 5, number_format($isVat ? $netOfVat : 0, 2), 1, 0, 'R');
-        $pdf->SetFont('helvetica', '', 8);
-        $pdf->Cell(50, 5, 'Less: VAT', 1, 0, 'R');
-        $pdf->SetFont('helvetica', 'B', 8);
-        $pdf->Cell(35, 5, number_format($vatVal, 2), 1, 1, 'R');
+        $pdf->Cell(105, 6, '', 0, 0, 'C'); 
+        $pdf->SetFont('helvetica', 'B', 9);
+        $pdf->Cell(50, 6, 'Less: VAT', 1, 0, 'R');
+        $pdf->Cell(35, 6, number_format($vatAmount, 2), 1, 1, 'R');
 
-        // Row 2: Vat Amount / Amount: Net of VAT
+        // Row 3
+        $r3Y = $pdf->GetY();
         $pdf->SetX($p2LeftX);
-        $pdf->SetFont('helvetica', '', 8);
-        $pdf->Cell(55, 5, 'Vat Amount', 1, 0, 'L');
-        $pdf->SetFont('helvetica', 'B', 8);
-        $pdf->Cell(50, 5, number_format($isVat ? $vatVal : 0, 2), 1, 0, 'R');
-        $pdf->SetFont('helvetica', '', 8);
-        $pdf->Cell(50, 5, 'Amount: Net of VAT', 1, 0, 'R');
-        $pdf->SetFont('helvetica', 'B', 8);
-        $pdf->Cell(35, 5, number_format($netOfVat, 2), 1, 1, 'R');
+        $pdf->SetFont('helvetica', 'B', 9);
+        $pdf->Cell(55, 6, 'Vatable Sales', 1, 0, 'L');
+        $pdf->Cell(50, 6, number_format($vatableSales, 2), 1, 0, 'R');
+        $pdf->Cell(50, 6, 'Amount: Net of VAT', 1, 0, 'R');
+        $pdf->Cell(35, 6, number_format($netOfVat, 2), 1, 1, 'R');
 
-        // Row 3: Zero Rated Sales / Add: VAT
+        // Row 4
+        $r4Y = $pdf->GetY();
         $pdf->SetX($p2LeftX);
-        $pdf->SetFont('helvetica', '', 8);
-        $pdf->Cell(55, 5, 'Zero Rated Sales', 1, 0, 'L');
-        $pdf->SetFont('helvetica', 'B', 8);
-        $pdf->Cell(50, 5, '0.00', 1, 0, 'R');
-        $pdf->SetFont('helvetica', '', 8);
-        $pdf->Cell(50, 5, 'Add: VAT', 1, 0, 'R');
-        $pdf->SetFont('helvetica', 'B', 8);
-        $pdf->Cell(35, 5, number_format($vatVal, 2), 1, 1, 'R');
+        $pdf->Cell(55, 6, 'Vat Amount', 1, 0, 'L');
+        $pdf->Cell(50, 6, number_format($vatAmount, 2), 1, 0, 'R');
+        $pdf->Cell(50, 6, 'Add: VAT', 1, 0, 'R');
+        $pdf->Cell(35, 6, number_format($vatAmount, 2), 1, 1, 'R');
 
-        // Row 4: Vat-Exempt Sales / Less: Withholding Tax
+        // Row 5
+        $r5Y = $pdf->GetY();
         $pdf->SetX($p2LeftX);
-        $pdf->SetFont('helvetica', '', 8);
-        $pdf->Cell(55, 5, 'Vat-Exempt Sales', 1, 0, 'L');
-        $pdf->SetFont('helvetica', 'B', 8);
-        $pdf->Cell(50, 5, number_format(!$isVat ? $subtotal : 0, 2), 1, 0, 'R');
-        $pdf->SetFont('helvetica', '', 8);
-        $pdf->Cell(50, 5, 'Less: Withholding Tax', 1, 0, 'R');
-        $pdf->SetFont('helvetica', 'B', 8);
-        $pdf->Cell(35, 5, number_format($whtAmount, 2), 1, 1, 'R');
+        $pdf->Cell(55, 6, 'Zero Rated Sales', 1, 0, 'L');
+        $pdf->Cell(50, 6, '0.00', 1, 0, 'R');
+        $pdf->Cell(50, 6, 'Less: Withholding Tax', 1, 0, 'R');
+        $pdf->Cell(35, 6, number_format($whtAmount, 2), 1, 1, 'R');
 
-        // Row 5: TOTAL AMOUNT DUE
+        // Row 6
+        $r6Y = $pdf->GetY();
         $pdf->SetX($p2LeftX);
-        $pdf->SetFont('helvetica', '', 8);
-        $pdf->Cell(55, 5, '', 1, 0, 'L');             // col1 blank
-        $pdf->Cell(50, 5, '', 1, 0, 'R');             // col2 blank
-        $pdf->SetFont('helvetica', 'B', 8);
-        $pdf->Cell(50, 5, 'TOTAL AMOUNT DUE', 1, 0, 'R');
-        $pdf->Cell(35, 5, number_format($totalAmount, 2), 1, 1, 'R');
+        $pdf->Cell(55, 6, 'Vat-Exempt Sales', 1, 0, 'L');
+        $pdf->Cell(50, 6, number_format($vatExempt, 2), 1, 0, 'R');
+        $pdf->Cell(50, 6, 'TOTAL AMOUNT DUE', 1, 0, 'R');
+        $pdf->Cell(35, 6, number_format($totalAmountDue, 2), 1, 1, 'R');
 
-        // Signatures Section at Bottom
+        // ========================================================================
+        // ADDING THICK BORDERS (0.4mm) OVER THE OUTER PERIMETERS
+        // ========================================================================
+        $pdf->SetLineWidth(0.4); 
+        
+        $pdf->Rect($p2LeftX, $hdrY, 190, 7);
+        $pdf->Rect($p2LeftX, $itemsY, 190, $summaryY - $itemsY);
+        $pdf->Rect($p2LeftX + 105, $r1Y, 85, 12);
+        $pdf->Rect($p2LeftX, $r3Y, 105, 24);
+        $pdf->Rect($p2LeftX + 105, $r3Y, 85, 12);
+        $pdf->Rect($p2LeftX + 105, $r5Y, 85, 6);
+        $pdf->Rect($p2LeftX + 105, $r6Y, 85, 6);
+        
+        $pdf->SetLineWidth(0.2); 
+        
+        // ========================================================================
+        // SIGNATURE SECTION 
+        // ========================================================================
         $pdf->Ln(18);
         $sigY = $pdf->GetY();
         $colW = 63.33;
 
-        $prepName = $billing->creator_full_name ?? '';
-        $apprName = $billing->approver_full_name ?? '';
-        $authName = $billing->creator_full_name ?? '';
+        $prepName = strtoupper($billing->creator_full_name ?? '');
+        $apprName = strtoupper($billing->approver_full_name ?? '');
+        $authName = strtoupper($billing->creator_full_name ?? '');
 
         $prepSigPath = $this->getSignaturePath($prepName);
         $apprSigPath = $this->getSignaturePath($apprName);
@@ -428,14 +479,16 @@ class PdfController extends Controller
         }
 
         $pdf->SetX($p2LeftX);
-        $pdf->SetFont('helvetica', !empty($prepName) ? 'U' : '', 9);
-        $pdf->Cell($colW, 6, !empty($prepName) ? $prepName : '________________________', 0, 0, 'C');
+        $pdf->SetFont('helvetica', 'B', 10);
+        $pdf->Cell($colW, 5, $prepName, 0, 0, 'C');
+        $pdf->Cell($colW, 5, $apprName, 0, 0, 'C');
+        $pdf->Cell($colW, 5, $authName, 0, 1, 'C');
 
-        $pdf->SetFont('helvetica', !empty($apprName) ? 'U' : '', 9);
-        $pdf->Cell($colW, 6, !empty($apprName) ? $apprName : '________________________', 0, 0, 'C');
-
-        $pdf->SetFont('helvetica', !empty($authName) ? 'U' : '', 9);
-        $pdf->Cell($colW, 6, !empty($authName) ? $authName : '________________________', 0, 1, 'C');
+        $pdf->SetX($p2LeftX);
+        $pdf->SetFont('helvetica', '', 10);
+        $pdf->Cell($colW, 3, '________________________', 0, 0, 'C');
+        $pdf->Cell($colW, 3, '________________________', 0, 0, 'C');
+        $pdf->Cell($colW, 3, '________________________', 0, 1, 'C');
 
         $pdf->SetX($p2LeftX);
         $pdf->SetFont('helvetica', 'B', 9);

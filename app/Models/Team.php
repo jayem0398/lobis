@@ -7,6 +7,9 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Team extends Model
 {
+    protected $connection = 'mysql';
+    protected $table = 'teams';
+    
     protected $fillable = ['team_name', 'quota'];
 
     public function users(): HasMany

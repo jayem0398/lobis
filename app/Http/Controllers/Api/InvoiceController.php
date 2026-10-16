@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Invoice;
+use App\Models\User;
+use App\Models\Team;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -69,7 +71,7 @@ class InvoiceController extends Controller
 
             $isAdmin = $this->isAdmin($currentUser);
 
-            $query = Invoice::with(['client', 'user', 'team', 'items'])
+            $query = Invoice::with(['client', 'team', 'items'])
                 ->orderBy('created_at', 'desc');
 
             if (!$isAdmin) {
@@ -87,11 +89,20 @@ class InvoiceController extends Controller
 
             $invoices = $query->get();
 
+            // Manually attach user and approver data from central_auth database
+            $userIds = $invoices->pluck('user_id')->merge($invoices->pluck('approved_by'))->filter()->unique();
+            $users = User::whereIn('id', $userIds)->get()->keyBy('id');
+
+            $invoices->each(function ($invoice) use ($users) {
+                $invoice->user = $users->get($invoice->user_id);
+                $invoice->approver = $users->get($invoice->approved_by);
+            });
+
             return response()->json([
-                'status'       => 'success',
-                'is_admin'     => $isAdmin,
-                'is_superadmin'=> $this->isSuperAdmin($currentUser),
-                'data'         => $invoices,
+                'status'        => 'success',
+                'is_admin'      => $isAdmin,
+                'is_superadmin' => $this->isSuperAdmin($currentUser),
+                'data'          => $invoices,
             ], 200);
 
         } catch (\Exception $e) {
@@ -105,18 +116,19 @@ class InvoiceController extends Controller
         $status = $request->input('status', 'Draft');
 
         $rules = [
-            'invoice_number'        => 'nullable|string',
-            'client_id'             => 'required|exists:clients,id',
-            'status'                => 'nullable|string|in:Draft,Pending Approval,Approved,Paid,Cancelled',
-            'service_period_start'  => 'nullable|date',
-            'service_period_end'    => 'nullable|date',
-            'payment_terms'         => 'nullable|string',
-            'tax_type'              => 'nullable|string',
-            'has_withholding_tax'   => 'nullable|boolean',
-            'delivery_address'      => 'nullable|string',
+            'invoice_number'          => 'nullable|string',
+            'client_id'               => 'required|exists:clients,id',
+            'team_id'                 => 'nullable|exists:teams,id',
+            'status'                  => 'nullable|string|in:Draft,Pending Approval,Approved,Paid,Cancelled',
+            'service_period_start'    => 'nullable|date',
+            'service_period_end'      => 'nullable|date',
+            'payment_terms'           => 'nullable|string',
+            'tax_type'                => 'nullable|string',
+            'has_withholding_tax'     => 'nullable|boolean',
+            'delivery_address'        => 'nullable|string',
             'delivery_contact_person' => 'nullable|string',
-            'delivery_position'     => 'nullable|string',
-            'delivery_phone'        => 'nullable|string',
+            'delivery_position'       => 'nullable|string',
+            'delivery_phone'          => 'nullable|string',
         ];
 
         if ($status !== 'Draft') {
@@ -141,25 +153,38 @@ class InvoiceController extends Controller
             DB::beginTransaction();
 
             $currentUser = $request->user();
-            $userId      = $currentUser ? $currentUser->id : 1;
-            $teamId      = $currentUser ? $currentUser->team_id : null;
-            $isAdmin     = $this->isAdmin($currentUser);
-            $isSuperAdmin= $this->isSuperAdmin($currentUser);
+
+            if (!$currentUser || !User::where('id', $currentUser->id)->exists()) {
+                DB::rollBack();
+                return response()->json([
+                    'status'  => 'error',
+                    'message' => 'Unauthenticated or user record no longer exists in central database.',
+                ], 401);
+            }
+
+            $userId       = $currentUser->id;
+            $isAdmin      = $this->isAdmin($currentUser);
+            $isSuperAdmin = $this->isSuperAdmin($currentUser);
+
+            // Safe team_id resolution: check request first, then user's team_id if it exists in teams table
+            $teamId = null;
+            if ($request->filled('team_id')) {
+                $teamId = Team::where('id', $request->team_id)->exists() ? $request->team_id : null;
+            } elseif (!empty($currentUser->team_id)) {
+                $teamId = Team::where('id', $currentUser->team_id)->exists() ? $currentUser->team_id : null;
+            }
 
             // Only admin/superadmin can set Approved directly; users get Pending Approval
             if (!$isAdmin && $status === 'Approved') {
                 $status = 'Pending Approval';
             }
-            // Regular users submitting non-draft → Pending Approval
             if (!$isAdmin && $status !== 'Draft') {
                 $status = 'Pending Approval';
             }
 
             // ── Invoice number resolution ──────────────────────────────────
-            // Superadmin can provide a manual invoice number; everyone else auto-generates.
             $invoiceNumber = null;
             if ($isSuperAdmin && !empty($request->invoice_number) && $request->invoice_number !== 'Loading...') {
-                // Validate uniqueness manually
                 if (Invoice::where('invoice_number', $request->invoice_number)->exists()) {
                     DB::rollBack();
                     return response()->json([
@@ -169,25 +194,45 @@ class InvoiceController extends Controller
                 }
                 $invoiceNumber = $request->invoice_number;
             } else {
-                // Use MAX-scan with pessimistic lock to prevent race conditions
-                Invoice::lockForUpdate()->count(); // acquire table lock hint
+                Invoice::lockForUpdate()->count();
                 $invoiceNumber = $this->generateNextInvoiceNumber();
             }
 
             // ── Totals ────────────────────────────────────────────────────
-            $subtotal       = 0;
+            $subtotal      = 0;
             if ($request->has('items') && is_array($request->items)) {
                 foreach ($request->items as $item) {
                     $subtotal += (float)($item['quantity'] ?? 0) * (float)($item['price'] ?? 0);
                 }
             }
 
-            $taxType        = $request->input('tax_type', 'vat');
-            $taxAmount      = (strtolower($taxType) === 'non-vat' || strtolower($taxType) === 'exempt') ? 0 : ($subtotal * 0.12);
+            $taxTypeRaw = strtolower(trim($request->input('tax_type', 'vat_exclusive')));
+            $taxType    = 'vat_exclusive';
+            if ($taxTypeRaw === 'vat_inclusive' || $taxTypeRaw === 'inclusive') $taxType = 'vat_inclusive';
+            elseif ($taxTypeRaw === 'vat_exempt' || $taxTypeRaw === 'exempt' || $taxTypeRaw === 'non-vat' || $taxTypeRaw === 'non_vat') $taxType = 'vat_exempt';
+
+            $vatableSales = 0;
+            $taxAmount    = 0;
+            if ($taxType === 'vat_inclusive') {
+                $vatableSales = $subtotal / 1.12;
+                $taxAmount    = $subtotal - $vatableSales;
+            } elseif ($taxType === 'vat_exclusive') {
+                $vatableSales = $subtotal;
+                $taxAmount    = $subtotal * 0.12;
+            } else {
+                $vatableSales = $subtotal;
+                $taxAmount    = 0;
+            }
+
             $hasWht         = $request->has_withholding_tax ? true : false;
-            $whtAmount      = $hasWht ? ($subtotal * 0.02) : 0;
-            $discountAmount = $request->discount ?? $request->discount_amount ?? 0;
-            $totalAmount    = max(0, $subtotal + $taxAmount - $whtAmount - $discountAmount);
+            $whtAmount      = $hasWht ? ($vatableSales * 0.02) : 0;
+            $discountAmount = (float)($request->discount ?? $request->discount_amount ?? 0);
+
+            if ($taxType === 'vat_exclusive') {
+                $totalAmount = max(0, $subtotal + $taxAmount - $whtAmount - $discountAmount);
+            } else {
+                $totalAmount = max(0, $subtotal - $whtAmount - $discountAmount);
+            }
 
             $invoice = Invoice::create([
                 'invoice_number'          => $invoiceNumber,
@@ -231,16 +276,48 @@ class InvoiceController extends Controller
 
             DB::commit();
 
+            try {
+                broadcast(new \App\Events\InvoiceCreated($invoice->load('items', 'client', 'team')))->toOthers();
+            } catch (\Exception $ex) {}
+
+            // Notify Admins & Superadmins
+            try {
+                $admins = User::whereIn('role', ['admin', 'superadmin', 'Admin', 'Superadmin'])
+                    ->where('id', '!=', $currentUser->id)
+                    ->get();
+
+                foreach ($admins as $admin) {
+                    $notif = \App\Models\AppNotification::create([
+                        'user_id'        => $admin->id,
+                        'type'           => 'new_invoice',
+                        'title'          => "New Invoice #{$invoice->invoice_number}",
+                        'message'        => "Invoice #{$invoice->invoice_number} (₱" . number_format($invoice->total_amount, 2) . ") created by " . ($currentUser->name ?? 'User') . ".",
+                        'invoice_id'     => $invoice->id,
+                        'invoice_number' => $invoice->invoice_number,
+                        'is_read'        => false,
+                    ]);
+
+                    try {
+                        broadcast(new \App\Events\NotificationCreated($notif));
+                    } catch (\Throwable $e) {}
+                }
+            } catch (\Throwable $e) {
+                Log::error('Error creating notification for invoice creation: ' . $e->getMessage());
+            }
+
             \App\Models\ActivityLog::log(
                 'Create Invoice',
                 "Created invoice #{$invoice->invoice_number} for total amount ₱" . number_format($invoice->total_amount, 2),
                 $currentUser
             );
 
+            $invoice->user = User::find($invoice->user_id);
+            $invoice->approver = User::find($invoice->approved_by);
+
             return response()->json([
                 'status'  => 'success',
                 'message' => 'Invoice saved successfully!',
-                'data'    => $invoice->load('items', 'client', 'team', 'user'),
+                'data'    => $invoice->load('items', 'client', 'team'),
             ], 201);
 
         } catch (\Exception $e) {
@@ -258,7 +335,10 @@ class InvoiceController extends Controller
     public function show($id)
     {
         try {
-            $invoice = Invoice::with(['client', 'user', 'team', 'items'])->findOrFail($id);
+            $invoice = Invoice::with(['client', 'team', 'items'])->findOrFail($id);
+            $invoice->user = User::find($invoice->user_id);
+            $invoice->approver = User::find($invoice->approved_by);
+
             return response()->json(['status' => 'success', 'data' => $invoice], 200);
         } catch (\Exception $e) {
             return response()->json(['status' => 'error', 'message' => 'Invoice not found.'], 404);
@@ -270,6 +350,14 @@ class InvoiceController extends Controller
     {
         $invoice     = Invoice::findOrFail($id);
         $currentUser = $request->user();
+
+        if (!$currentUser || !User::where('id', $currentUser->id)->exists()) {
+            return response()->json([
+                'status'  => 'error',
+                'message' => 'Unauthenticated or user record no longer exists.',
+            ], 401);
+        }
+
         $isAdmin     = $this->isAdmin($currentUser);
         $isSuperAdmin= $this->isSuperAdmin($currentUser);
 
@@ -292,10 +380,17 @@ class InvoiceController extends Controller
             }
             $invoice->update($updateData);
 
+            try {
+                broadcast(new \App\Events\InvoiceStatusChanged($invoice->load('items', 'client', 'team')))->toOthers();
+            } catch (\Exception $ex) {}
+
+            $invoice->user = User::find($invoice->user_id);
+            $invoice->approver = User::find($invoice->approved_by);
+
             return response()->json([
                 'status'  => 'success',
                 'message' => 'Invoice status updated successfully!',
-                'data'    => $invoice->load('items', 'client', 'team', 'user', 'approver'),
+                'data'    => $invoice->load('items', 'client', 'team'),
             ], 200);
         }
 
@@ -326,6 +421,7 @@ class InvoiceController extends Controller
         $rules = [
             'invoice_number'          => 'required|string|unique:invoices,invoice_number,' . $id,
             'client_id'               => 'required|exists:clients,id',
+            'team_id'                 => 'nullable|exists:teams,id',
             'status'                  => 'nullable|string|in:Draft,Pending Approval,Approved,Paid,Cancelled',
             'service_period_start'    => 'nullable|date',
             'service_period_end'      => 'nullable|date',
@@ -341,19 +437,19 @@ class InvoiceController extends Controller
         $status = $request->input('status', $currentStatus);
 
         if ($status !== 'Draft') {
-            $rules['issue_date']           = 'required|date';
-            $rules['due_date']             = 'required|date';
-            $rules['items']                = 'required|array|min:1';
-            $rules['items.*.item_name']    = 'required|string';
-            $rules['items.*.quantity']     = 'required|numeric|min:0.1';
-            $rules['items.*.price']        = 'required|numeric|min:0';
+            $rules['issue_date']             = 'required|date';
+            $rules['due_date']               = 'required|date';
+            $rules['items']                  = 'required|array|min:1';
+            $rules['items.*.item_name']      = 'required|string';
+            $rules['items.*.quantity']       = 'required|numeric|min:0.1';
+            $rules['items.*.price']          = 'required|numeric|min:0';
         } else {
-            $rules['issue_date']           = 'nullable|date';
-            $rules['due_date']             = 'nullable|date';
-            $rules['items']                = 'nullable|array';
-            $rules['items.*.item_name']    = 'nullable|string';
-            $rules['items.*.quantity']     = 'nullable|numeric';
-            $rules['items.*.price']        = 'nullable|numeric';
+            $rules['issue_date']             = 'nullable|date';
+            $rules['due_date']               = 'nullable|date';
+            $rules['items']                  = 'nullable|array';
+            $rules['items.*.item_name']      = 'nullable|string';
+            $rules['items.*.quantity']       = 'nullable|numeric';
+            $rules['items.*.price']          = 'nullable|numeric';
         }
 
         $request->validate($rules);
@@ -361,24 +457,23 @@ class InvoiceController extends Controller
         try {
             DB::beginTransaction();
 
-            // ── Determine new status & edit_count ────────────────────────
             $newStatus = $status;
             $newEditCount = $invoice->edit_count;
 
             if (!$isAdmin) {
-                // Users: always goes back to Pending Approval when submitting (not Draft)
                 if ($status !== 'Draft') {
                     $newStatus = 'Pending Approval';
                 }
-                // Increment edit count on every save (Draft or Pending)
                 $newEditCount = $invoice->edit_count + 1;
             } else {
-                // Admin/superadmin: can freely set status, edit_count still increments
                 $newStatus = $request->status ?? $currentStatus;
                 $newEditCount = $invoice->edit_count + 1;
             }
 
-            // ── Totals ────────────────────────────────────────────────────
+            $teamId = $request->filled('team_id') && Team::where('id', $request->team_id)->exists()
+                ? $request->team_id 
+                : $invoice->team_id;
+
             $subtotal = 0;
             if ($request->has('items') && is_array($request->items)) {
                 foreach ($request->items as $item) {
@@ -386,17 +481,38 @@ class InvoiceController extends Controller
                 }
             }
 
-            $taxType        = $request->input('tax_type', 'vat');
-            $taxAmount      = (strtolower($taxType) === 'non-vat' || strtolower($taxType) === 'exempt') ? 0 : ($subtotal * 0.12);
+            $taxTypeRaw = strtolower(trim($request->input('tax_type', 'vat_exclusive')));
+            $taxType    = 'vat_exclusive';
+            if ($taxTypeRaw === 'vat_inclusive' || $taxTypeRaw === 'inclusive') $taxType = 'vat_inclusive';
+            elseif ($taxTypeRaw === 'vat_exempt' || $taxTypeRaw === 'exempt' || $taxTypeRaw === 'non-vat' || $taxTypeRaw === 'non_vat') $taxType = 'vat_exempt';
+
+            $vatableSales = 0;
+            $taxAmount    = 0;
+            if ($taxType === 'vat_inclusive') {
+                $vatableSales = $subtotal / 1.12;
+                $taxAmount    = $subtotal - $vatableSales;
+            } elseif ($taxType === 'vat_exclusive') {
+                $vatableSales = $subtotal;
+                $taxAmount    = $subtotal * 0.12;
+            } else {
+                $vatableSales = $subtotal;
+                $taxAmount    = 0;
+            }
+
             $hasWht         = $request->has_withholding_tax ? true : false;
-            $whtAmount      = $hasWht ? ($subtotal * 0.02) : 0;
-            $discountAmount = $request->discount ?? $request->discount_amount ?? 0;
-            $totalAmount    = max(0, $subtotal + $taxAmount - $whtAmount - $discountAmount);
+            $whtAmount      = $hasWht ? ($vatableSales * 0.02) : 0;
+            $discountAmount = (float)($request->discount ?? $request->discount_amount ?? 0);
+
+            if ($taxType === 'vat_exclusive') {
+                $totalAmount = max(0, $subtotal + $taxAmount - $whtAmount - $discountAmount);
+            } else {
+                $totalAmount = max(0, $subtotal - $whtAmount - $discountAmount);
+            }
 
             $invoice->update([
                 'invoice_number'          => $request->invoice_number,
                 'client_id'               => $request->client_id,
-                'team_id'                 => $request->team_id ?? $invoice->team_id,
+                'team_id'                 => $teamId,
                 'issue_date'              => $request->issue_date,
                 'due_date'                => $request->due_date,
                 'service_period_start'    => $request->service_period_start,
@@ -416,7 +532,6 @@ class InvoiceController extends Controller
                 'notes'                   => $request->notes,
                 'status'                  => $newStatus,
                 'edit_count'              => $newEditCount,
-                // Clear deletion request if invoice is being re-edited
                 'deletion_requested'      => false,
                 'deletion_reason'         => null,
             ]);
@@ -438,6 +553,34 @@ class InvoiceController extends Controller
 
             DB::commit();
 
+            // Notify invoice owner if status changed or updated by someone else
+            try {
+                if ($invoice->user_id && $invoice->user_id != $currentUser->id) {
+                    $statusMsg = ($currentStatus !== $newStatus)
+                        ? "Status changed from {$currentStatus} to {$newStatus}"
+                        : "Invoice details were updated";
+
+                    $notif = \App\Models\AppNotification::create([
+                        'user_id'        => $invoice->user_id,
+                        'type'           => 'invoice_update',
+                        'title'          => "Invoice #{$invoice->invoice_number} Updated",
+                        'message'        => "Your invoice #{$invoice->invoice_number}: {$statusMsg} by " . ($currentUser->name ?? 'Admin') . ".",
+                        'invoice_id'     => $invoice->id,
+                        'invoice_number' => $invoice->invoice_number,
+                        'is_read'        => false,
+                    ]);
+
+                    try {
+                        broadcast(new \App\Events\NotificationCreated($notif));
+                    } catch (\Throwable $e) {}
+                }
+            } catch (\Throwable $e) {
+                Log::error('Error creating notification for invoice update: ' . $e->getMessage());
+            }
+
+            $invoice->user = User::find($invoice->user_id);
+            $invoice->approver = User::find($invoice->approved_by);
+
             $msg = $newStatus === 'Draft'
                 ? 'Draft saved successfully!'
                 : 'Invoice updated and submitted for approval!';
@@ -445,7 +588,7 @@ class InvoiceController extends Controller
             return response()->json([
                 'status'  => 'success',
                 'message' => $msg,
-                'data'    => $invoice->load('items', 'client', 'team', 'user'),
+                'data'    => $invoice->load('items', 'client', 'team'),
             ], 200);
 
         } catch (\Exception $e) {
@@ -459,7 +602,7 @@ class InvoiceController extends Controller
         }
     }
 
-    // ─── DELETE REQUEST (user submits for approval) ───────────────────────────
+    // ─── DELETE REQUEST ────────────────────────────────────────────────────────
     public function deleteRequest(Request $request, $id)
     {
         $request->validate([
@@ -469,7 +612,6 @@ class InvoiceController extends Controller
         try {
             $invoice = Invoice::findOrFail($id);
 
-            // Cannot request deletion of an already deletion-pending invoice
             if ($invoice->deletion_requested) {
                 return response()->json([
                     'status'  => 'error',
@@ -482,7 +624,28 @@ class InvoiceController extends Controller
                 'deletion_reason'    => $request->reason,
             ]);
 
-            Log::info("User #{$request->user()?->id} requested deletion for Invoice ID: {$id}. Reason: {$request->reason}");
+            // Notify Admins
+            try {
+                $admins = User::whereIn('role', ['admin', 'superadmin', 'Admin', 'Superadmin'])
+                    ->where('id', '!=', $request->user()?->id ?? 0)
+                    ->get();
+
+                foreach ($admins as $admin) {
+                    $notif = \App\Models\AppNotification::create([
+                        'user_id'        => $admin->id,
+                        'type'           => 'deletion_request',
+                        'title'          => "Deletion Request: #{$invoice->invoice_number}",
+                        'message'        => "Deletion requested for invoice #{$invoice->invoice_number}. Reason: {$request->reason}",
+                        'invoice_id'     => $invoice->id,
+                        'invoice_number' => $invoice->invoice_number,
+                        'is_read'        => false,
+                    ]);
+
+                    try {
+                        broadcast(new \App\Events\NotificationCreated($notif));
+                    } catch (\Throwable $e) {}
+                }
+            } catch (\Throwable $e) {}
 
             return response()->json([
                 'status'  => 'success',
@@ -498,7 +661,7 @@ class InvoiceController extends Controller
         }
     }
 
-    // ─── DESTROY (admin/superadmin only) ─────────────────────────────────────
+    // ─── DESTROY ──────────────────────────────────────────────────────────────
     public function destroy(Request $request, $id)
     {
         $currentUser = $request->user();

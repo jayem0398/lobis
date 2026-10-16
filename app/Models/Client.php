@@ -8,8 +8,11 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class Client extends Model
 {
+    protected $connection = 'mysql';
+
     protected $fillable = [
         'user_id', 
+        'client_code', 
         'client_name', 
         'contact_person', 
         'position', 

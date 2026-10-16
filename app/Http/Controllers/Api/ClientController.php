@@ -4,7 +4,9 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Client;
+use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class ClientController extends Controller
 {
@@ -30,11 +32,12 @@ class ClientController extends Controller
             'client_name' => 'required|string|max:255',
             'contact_person' => 'required|string|max:255',
             'position' => 'nullable|string|max:255',
-            'user_id' => 'required|exists:users,id', // Kailangan valid user ID galing sa dropdown
-            'contact_number' => 'required|string|max:50',
+            // FIX: Using Rule::exists with the User model points the validator to the central_auth database
+            'user_id' => ['required', Rule::exists(User::class, 'id')],
+            'contact_number' => 'nullable|string|max:50',
             'client_address' => 'nullable|string',
             'tin_number' => 'nullable|string|max:50',
-            'business_style' => 'required|string|max:255',
+            'business_style' => 'nullable|string|max:255',
         ]);
 
         // 1. Awtomatikong i-generate ang Client Code (e.g., CL-0001)
@@ -44,7 +47,7 @@ class ClientController extends Controller
 
         // 2. I-save ang Client kasama ang user_id at client_code
         $client = Client::create([
-            'user_id' => $request->user_id, // Galing sa frontend dropdown
+            'user_id' => $request->user_id,
             'client_code' => $clientCode,
             'client_name' => $request->client_name,
             'contact_person' => $request->contact_person,
@@ -89,15 +92,15 @@ class ClientController extends Controller
             'client_name' => 'required|string|max:255',
             'contact_person' => 'required|string|max:255',
             'position' => 'nullable|string|max:255',
-            'user_id' => 'required|exists:users,id', // <--- DITO ANG FIX: Isinama na ang user_id sa validation
-            'contact_number' => 'required|string|max:50',
+            // FIX: Applied the same validation rule for updates
+            'user_id' => ['required', Rule::exists(User::class, 'id')],
+            'contact_number' => 'nullable|string|max:50',
             'client_address' => 'nullable|string',
             'tin_number' => 'nullable|string|max:50',
-            'business_style' => 'required|string|max:255',
+            'business_style' => 'nullable|string|max:255',
             'client_status' => 'required|string|in:Approved,Pending Approval,Suspended',
         ]);
 
-        // <--- DITO ANG FIX: Isinama na ang user_id at client_status sa pag-update
         $client->update($request->only([
             'client_name', 'contact_person', 'position', 
             'user_id', 'contact_number', 'client_address', 

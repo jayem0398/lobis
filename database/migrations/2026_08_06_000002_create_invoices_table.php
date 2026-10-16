@@ -15,8 +15,13 @@ return new class extends Migration
             $table->id();
             $table->string('invoice_number')->unique();
             $table->foreignId('client_id')->constrained()->onDelete('cascade');
-            $table->foreignId('team_id')->nullable()->constrained('teams')->onDelete('set null');
-            $table->foreignId('user_id')->comment('Created By')->constrained('users')->onDelete('cascade');
+            
+            $table->unsignedBigInteger('team_id')->nullable();
+            $table->unsignedBigInteger('user_id')->comment('Created By');
+            
+            $table->index('team_id');
+            $table->index('user_id');
+            // ──────────────────────────────────────────────────────────────────
             
             $table->date('issue_date');
             $table->date('due_date');
